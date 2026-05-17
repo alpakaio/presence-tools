@@ -164,6 +164,7 @@ All managed by `_showState(name)` which shows one `#state-{name}` div and hides 
 | File | Read this for |
 |------|--------------|
 | `CONTEXT.md` | Full API reference and session data model |
+| `API_REFERENCE.md` | Request and response examples for every challenge type |
 | `app.js` | All runtime logic — start here to understand the flow |
 | `index.html` | All UI — challenge panels, state screens, styling |
 
