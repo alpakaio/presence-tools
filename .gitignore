@@ -1,0 +1,8 @@
+.aws-sam/
+template.yaml
+samconfig.toml
+run.txt
+memory/
+.envrc
+.DS_Store
+

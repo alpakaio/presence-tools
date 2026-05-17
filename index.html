@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<!--
+  presence.tools — Terminal
+  ========================
+  A reference implementation of the presence.tools session terminal.
+  Designed to be read, understood, and adapted by developers.
+
+  Key decisions:
+  - No build step. Plain HTML + vanilla JS. Copy and host anywhere.
+  - Tailwind CSS via CDN for utility-first styling that's immediately readable.
+  - Phone-only UX. On desktop, the phone frame is centered in the viewport.
+  - All business logic lives in app.js. This file is pure layout and style.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+
+  <link rel="icon" type="image/svg+xml" href="/img/presence.tools.icon.svg" />
+  <link rel="icon" sizes="32x32" href="/img/presence.tools.icon.32.png">
+  <link rel="icon" sizes="16x16" href="/img/presence.tools.icon.16.png">
+
+  <!--
+    Viewport: width=device-width keeps the layout at the device's actual
+    pixel width. initial-scale=1 prevents iOS from zooming on focus of
+    inputs. maximum-scale=1 prevents double-tap zoom on form elements.
+  -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Presence</title>
+
+  <!--
+    Tailwind CSS via CDN.
+    In production you'd run the Tailwind CLI to tree-shake and ship a
+    minimal CSS bundle. For a reference implementation, the CDN script
+    is fine — it only loads what it parses from class= attributes.
+  -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!--
+    Tailwind config: extend the default theme with a brand-neutral blue
+    that can be overridden per session. We also set a custom font stack.
+  -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#eff6ff',
+              100: '#dbeafe',
+              500: '#3b82f6',
+              600: '#2563eb',
+              700: '#1d4ed8',
+            }
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /*
+      Phone-frame constraint.
+      On screens wider than 430px (the widest common iPhone), we center
+      the app and fix it to phone width. This delivers a consistent
+      experience whether the end user is on a phone or a desktop.
+    */
+    @media (min-width: 431px) {
+      #app-frame {
+        max-width: 430px;
+        margin: 0 auto;
+        min-height: 100vh;
+        box-shadow: 0 0 0 1px rgba(0,0,0,0.08), 0 8px 40px rgba(0,0,0,0.15);
+      }
+      body {
+        background: #e5e7eb; /* visible only outside the phone frame on desktop */
+      }
+    }
+
+    /*
+      Camera preview: fill the width of the challenge card.
+      object-fit: cover crops without distortion.
+    */
+    #face-preview, #video-preview {
+      width: 100%;
+      aspect-ratio: 4/3;
+      object-fit: cover;
+      background: #000;
+      border-radius: 0.75rem;
+      display: block;
+    }
+
+    /*
+      Face guide overlay: a dashed oval centred over the camera feed.
+      The wrapper is position:relative so the oval can be absolute inside it.
+      The oval is purely decorative — gives the user a target to align to.
+    */
+    #face-preview-wrapper {
+      position: relative;
+    }
+    #face-oval-guide {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 52%;
+      aspect-ratio: 3/4;
+      border: 2.5px dashed rgba(255, 255, 255, 0.75);
+      border-radius: 50%;
+      pointer-events: none; /* clicks pass through to the video below */
+    }
+
+    /*
+      PIN pad: equal-width grid. The CSS grid approach works reliably
+      across all mobile browsers without JS layout calculations.
+    */
+    #pin-pad {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+    }
+
+    /*
+      Smooth fade transition between challenge screens.
+      Keeps the UX from feeling abrupt when advancing through the chain.
+    */
+    .challenge-card {
+      animation: fadeIn 0.25s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+
+<body class="bg-white font-sans text-gray-900 min-h-screen">
+
+  <!--
+    #app-frame: the phone-constrained container.
+    Everything lives inside this div.
+  -->
+  <div id="app-frame" class="bg-white min-h-screen flex flex-col">
+
+    <!-- ─── Header ──────────────────────────────────────────────────────── -->
+    <!--
+      The header displays the client's displayName from the session object.
+      It's shown once the session loads successfully. Hidden initially.
+    -->
+    <header id="app-header" class="hidden px-5 pt-8 pb-4">
+      <h1 id="display-name" class="text-xl font-bold text-gray-900 mt-0.5"></h1>
+    </header>
+
+    <!-- ─── Main content area ───────────────────────────────────────────── -->
+    <main class="flex-1 flex flex-col px-5 pb-6">
+
+      <!-- Loading state: shown until the session fetch resolves -->
+      <div id="state-loading" class="flex-1 flex flex-col items-center justify-center gap-4 text-center">
+        <!--
+          CSS-only spinner: no JS, no GIF, no external icon font.
+          border-t-brand-500 gives the spinning arc its colour.
+        -->
+        <div class="w-10 h-10 rounded-full border-4 border-gray-200 border-t-blue-500 animate-spin"></div>
+        <p class="text-sm text-gray-500">Loading session…</p>
+      </div>
+
+      <!-- Error state: shown when the session can't be loaded or fails -->
+      <div id="state-error" class="hidden flex-1 flex flex-col items-center justify-center gap-3 text-center px-4">
+        <!-- ⚠ unicode shield — no icon library needed -->
+        <span class="text-4xl">⚠️</span>
+        <h2 class="text-lg font-semibold text-gray-900">Something went wrong</h2>
+        <p id="error-message" class="text-sm text-gray-500 leading-relaxed"></p>
+      </div>
+
+      <!-- Used state: session was already consumed -->
+      <div id="state-used" class="hidden flex-1 flex flex-col items-center justify-center gap-3 text-center px-4">
+        <span class="text-4xl">🔒</span>
+        <h2 class="text-lg font-semibold text-gray-900">Link already used</h2>
+        <p class="text-sm text-gray-500 leading-relaxed">
+          This session link has already been completed. Each link can only be used once.
+        </p>
+      </div>
+
+      <!-- Window state: user arrived outside of all location time windows -->
+      <div id="state-window" class="hidden flex-1 flex flex-col items-center justify-center gap-3 text-center px-4">
+        <span class="text-4xl">🕐</span>
+        <h2 class="text-lg font-semibold text-gray-900" id="window-heading"></h2>
+        <p class="text-sm text-gray-500 leading-relaxed" id="window-message"></p>
+      </div>
+
+      <!-- Complete state: all challenges passed -->
+      <div id="state-complete" class="hidden flex-1 flex flex-col items-center justify-center gap-4 text-center px-4">
+        <div class="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center">
+          <span class="text-3xl">✓</span>
+        </div>
+        <h2 class="text-xl font-bold text-gray-900">Presence confirmed</h2>
+        <p class="text-sm text-gray-500 leading-relaxed">
+          You're all set. Your attendance has been recorded.
+        </p>
+        <!-- Confidence score: shown when the server returns it (FACE challenges) -->
+        <p id="complete-confidence" class="hidden text-xs text-gray-400"></p>
+      </div>
+
+      <!-- Failed state: a challenge was rejected by the server -->
+      <div id="state-failed" class="hidden flex-1 flex flex-col items-center justify-center gap-3 text-center px-4">
+        <div class="w-16 h-16 rounded-full bg-red-100 flex items-center justify-center">
+          <span class="text-3xl">✕</span>
+        </div>
+        <h2 class="text-xl font-bold text-gray-900">Verification failed</h2>
+        <p id="failed-message" class="text-sm text-gray-500 leading-relaxed"></p>
+      </div>
+
+      <!-- ─── Challenge container ─────────────────────────────────────── -->
+      <!--
+        #state-challenge is shown while working through the challenge chain.
+        app.js replaces its content for each challenge type.
+      -->
+      <div id="state-challenge" class="hidden flex-1 flex flex-col gap-6 pt-2">
+
+        <!-- Progress indicator: "Step 2 of 3" -->
+        <div class="flex items-center gap-2">
+          <div id="progress-bar-track" class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div id="progress-bar-fill" class="h-full bg-blue-500 rounded-full transition-all duration-500"></div>
+          </div>
+          <span id="progress-label" class="text-xs text-gray-400 shrink-0"></span>
+        </div>
+
+        <!-- ── FACE challenge ────────────────────────────────────────── -->
+        <div id="challenge-FACE" class="hidden challenge-card flex flex-col gap-4">
+          <div class="text-center">
+            <h2 class="text-lg font-semibold text-gray-900">Face check</h2>
+            <p class="text-sm text-gray-500 mt-1 leading-relaxed">
+              Take a clear selfie so we can verify your identity.
+            </p>
+          </div>
+          <!--
+            The video element streams the front camera.
+            The canvas is used off-screen to capture a JPEG frame.
+            The oval guide is a CSS-only overlay — no JS needed.
+          -->
+          <div id="face-preview-wrapper">
+            <video id="face-preview" autoplay playsinline muted></video>
+            <div id="face-oval-guide"></div>
+          </div>
+          <canvas id="face-canvas" class="hidden"></canvas>
+          <button id="face-btn"
+            class="w-full py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base
+                   active:bg-blue-600 transition-colors">
+            Take photo
+          </button>
+          <p id="face-status" class="text-center text-sm text-gray-400"></p>
+        </div>
+
+        <!-- ── PIN challenge ─────────────────────────────────────────── -->
+        <div id="challenge-PIN" class="hidden challenge-card flex flex-col gap-6">
+          <div class="text-center">
+            <h2 class="text-lg font-semibold text-gray-900">Enter your PIN</h2>
+          </div>
+          <!--
+            PIN display: dots fill as the user types.
+            Max 8 digits — covers typical 4–6 digit PINs with headroom.
+          -->
+          <div id="pin-display" class="flex justify-center gap-3" aria-live="polite" aria-label="PIN entered">
+            <!-- Dots rendered dynamically by app.js -->
+          </div>
+          <!--
+            PIN pad: 1–9, then empty spacer, 0, backspace.
+            Semantically these are buttons, not inputs, so the OS keyboard
+            never appears — we own the entire input experience.
+          -->
+          <div id="pin-pad">
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">1</button>
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">2</button>
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">3</button>
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">4</button>
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">5</button>
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">6</button>
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">7</button>
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">8</button>
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">9</button>
+            <!-- Spacer — keeps 0 centred in the bottom row -->
+            <div></div>
+            <button class="pin-key py-5 rounded-2xl bg-gray-100 text-xl font-semibold text-gray-900 active:bg-gray-200">0</button>
+            <button id="pin-back" class="py-5 rounded-2xl bg-gray-100 text-xl text-gray-900 active:bg-gray-200">⌫</button>
+          </div>
+          <button id="pin-submit"
+            class="w-full py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base
+                   disabled:opacity-40 disabled:cursor-not-allowed active:bg-blue-600 transition-colors"
+            disabled>
+            Submit PIN
+          </button>
+          <p id="pin-status" class="text-center text-sm text-gray-400"></p>
+        </div>
+
+        <!-- ── CALL challenge ────────────────────────────────────────── -->
+        <!--
+          CALL: the server initiates a voice call. The challenge object contains
+          a passphrase in `value` that the user reads aloud when prompted.
+          No input needed — the server validates the spoken response.
+        -->
+        <div id="challenge-CALL" class="hidden challenge-card flex flex-col gap-5">
+          <div class="text-center">
+            <h2 class="text-lg font-semibold text-gray-900">Answer your phone</h2>
+            <p class="text-sm text-gray-500 mt-1 leading-relaxed">
+              We're calling you now. When prompted, read the passphrase below clearly.
+            </p>
+          </div>
+          <div class="rounded-2xl bg-gray-50 border-2 border-gray-200 px-6 py-5 text-center">
+            <p class="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-2">Your passphrase</p>
+            <p id="call-passphrase" class="text-xl font-bold text-gray-900 leading-snug"></p>
+          </div>
+          <p id="call-status" class="text-center text-sm text-gray-400">Waiting for the call to complete…</p>
+          <button id="call-retry"
+            class="hidden w-full py-4 rounded-2xl bg-gray-100 text-gray-900 font-semibold text-base active:bg-gray-200 transition-colors">
+            Try again
+          </button>
+        </div>
+
+        <!-- ── SMS / EMAIL / SMS_MFA / EMAIL_MFA challenges ─────────── -->
+        <!--
+          4-digit MFA code entry. Each digit gets its own box.
+          app.js sets #otp-heading and #otp-subheading, then wires up the boxes.
+
+          Each box is a single-character input. Typing a digit auto-advances
+          focus to the next box. Backspace moves focus back. This is the standard
+          pattern used by every major MFA flow (Apple, Google, Stripe, etc).
+
+          autocomplete="one-time-code" on the first box enables iOS/Android
+          SMS autofill — the OS fills all four digits automatically.
+        -->
+        <div id="challenge-OTP" class="hidden challenge-card flex flex-col gap-6">
+          <div class="text-center">
+            <h2 id="otp-heading" class="text-lg font-semibold text-gray-900"></h2>
+            <p id="otp-subheading" class="text-sm text-gray-500 mt-1 leading-relaxed"></p>
+          </div>
+          <div id="otp-boxes" class="flex justify-center gap-3">
+            <input class="otp-box w-16 h-16 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+              type="text" inputmode="numeric" maxlength="1" autocomplete="one-time-code" />
+            <input class="otp-box w-16 h-16 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+              type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+            <input class="otp-box w-16 h-16 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+              type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+            <input class="otp-box w-16 h-16 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+              type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+          </div>
+          <button id="otp-submit"
+            class="w-full py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base
+                   disabled:opacity-40 disabled:cursor-not-allowed active:bg-blue-600 transition-colors"
+            disabled>
+            Verify code
+          </button>
+          <p id="otp-status" class="text-center text-sm text-gray-400"></p>
+        </div>
+
+        <!-- ── PASSWORD challenge ────────────────────────────────────── -->
+        <div id="challenge-PASSWORD" class="hidden challenge-card flex flex-col gap-5">
+          <div class="text-center">
+            <h2 class="text-lg font-semibold text-gray-900">Enter your password</h2>
+          </div>
+          <!--
+            Wrapped in a form with autocomplete="off" to suppress the browser's
+            password save prompt. The input name is deliberately non-standard
+            ("presence-secret") — browsers key their save heuristics on common
+            names like "password". onsubmit="return false" prevents any accidental
+            form submission if the user hits Enter.
+          -->
+          <form autocomplete="off" onsubmit="return false">
+            <input id="password-input"
+              type="password"
+              name="presence-secret"
+              autocomplete="off"
+              placeholder="Password"
+              class="w-full py-4 px-4 border-2 border-gray-200 rounded-2xl
+                     text-base outline-none focus:border-blue-500 transition-colors" />
+          </form>
+          <button id="password-submit"
+            class="w-full py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base
+                   disabled:opacity-40 disabled:cursor-not-allowed active:bg-blue-600 transition-colors"
+            disabled>
+            Continue
+          </button>
+          <p id="password-status" class="text-center text-sm text-gray-400"></p>
+        </div>
+
+        <!-- ── VIDEO challenge ───────────────────────────────────────── -->
+        <!--
+          VIDEO: user records themselves saying a phrase from challenge.value.
+          Max 5 seconds — a countdown overlays the camera feed, then the clip
+          is auto-submitted. No manual submit step.
+        -->
+        <div id="challenge-VIDEO" class="hidden challenge-card flex flex-col gap-4">
+          <div class="text-center">
+            <h2 class="text-lg font-semibold text-gray-900">Record a short clip</h2>
+            <p class="text-sm text-gray-500 mt-1 leading-relaxed">
+              When ready, tap record and say the phrase below clearly.
+            </p>
+          </div>
+          <!-- Phrase to say — populated from challenge.value by app.js -->
+          <div class="rounded-2xl bg-gray-50 border-2 border-gray-200 px-6 py-4 text-center">
+            <p class="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-1">Say this phrase</p>
+            <p id="video-phrase" class="text-lg font-bold text-gray-900 leading-snug"></p>
+          </div>
+          <!-- Camera feed with countdown overlay -->
+          <div id="face-preview-wrapper" style="position:relative">
+            <video id="video-preview" autoplay playsinline muted></video>
+            <!--
+              Countdown badge: shown over the video once recording starts.
+              Updated each second by app.js. Hidden until recording begins.
+            -->
+            <div id="video-countdown"
+              class="hidden absolute top-3 right-3 w-10 h-10 rounded-full bg-black/60
+                     flex items-center justify-center text-white font-bold text-lg">
+            </div>
+          </div>
+          <button id="video-record-btn"
+            class="w-full py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base
+                   active:bg-blue-600 transition-colors">
+            Start recording
+          </button>
+          <p id="video-status" class="text-center text-sm text-gray-400"></p>
+        </div>
+
+        <!-- ── ENROL challenge ────────────────────────────────────────── -->
+        <!--
+          Fields are rendered dynamically by app.js based on the challenge's
+          `fields` array. This placeholder is replaced at runtime.
+        -->
+        <div id="challenge-ENROL" class="hidden challenge-card flex flex-col gap-5">
+          <div class="text-center">
+            <h2 class="text-lg font-semibold text-gray-900">Register your details</h2>
+            <p class="text-sm text-gray-500 mt-1 leading-relaxed">
+              Please fill in the form below to complete enrolment.
+            </p>
+          </div>
+          <!-- Dynamic form fields injected here -->
+          <div id="enrol-fields" class="flex flex-col gap-4"></div>
+          <button id="enrol-submit"
+            class="w-full py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base
+                   disabled:opacity-40 disabled:cursor-not-allowed active:bg-blue-600 transition-colors">
+            Submit
+          </button>
+          <p id="enrol-status" class="text-center text-sm text-gray-400"></p>
+        </div>
+
+      </div><!-- /#state-challenge -->
+    </main>
+
+    <!-- ─── Footer ───────────────────────────────────────────────────────── -->
+    <!--
+      Only shown when privacyNoticeUrl is present on the session.
+      This is a legal requirement in many jurisdictions for biometric capture.
+    -->
+    <footer id="app-footer" class="hidden px-5 py-4 border-t border-gray-100 text-center">
+      <a id="privacy-link"
+        href="#"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="text-xs text-gray-400 underline underline-offset-2">
+        Privacy notice
+      </a>
+    </footer>
+
+  </div><!-- /#app-frame -->
+
+  <script src="/app.js"></script>
+
+</body>
+</html>
