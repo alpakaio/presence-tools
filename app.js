@@ -298,7 +298,7 @@ const PresenceApp = {
   // ─── API: submit a challenge response ─────────────────────────────────────
 
   /**
-   * POST /sessions/{sessionId}/{type}  (e.g. /pin, /face, /sms_mfa)
+   * POST /sessions/{sessionId}/{type}  (e.g. /pin, /face, /SMS)
    *
    * Body is a challenges array: always just the GEO entry (if captured) plus
    * this challenge with its captured value populated. Sending only these two
@@ -564,36 +564,36 @@ const PresenceApp = {
       });
     },
 
-    // ── SMS_MFA ────────────────────────────────────────────────────────────
+    // ── SMS ────────────────────────────────────────────────────────────
 
     /**
-     * SMS_MFA: OTP delivered via SMS.
+     * SMS: OTP delivered via SMS.
      *
      * The server sends the SMS when this challenge is reached in the chain.
      * We just show an input field. autocomplete="one-time-code" enables
      * iOS and Android to offer autofill from the SMS notification.
      */
-    SMS_MFA(challenge) {
+    SMS(challenge) {
       document.getElementById('otp-heading').textContent = 'Check your messages';
       document.getElementById('otp-subheading').textContent =
         'We\'ve sent a verification code to your phone. Enter it below.';
       PresenceApp._challengeHandlers._OTP.call(this, challenge);
     },
 
-    // SMS is the short form used by the session — same UI as SMS_MFA.
-    SMS(challenge) { PresenceApp._challengeHandlers.SMS_MFA.call(this, challenge); },
+    // SMS is the short form used by the session — same UI as SMS.
+    SMS(challenge) { PresenceApp._challengeHandlers.SMS.call(this, challenge); },
 
-    // ── EMAIL_MFA ──────────────────────────────────────────────────────────
+    // ── EMAIL ──────────────────────────────────────────────────────────
 
-    EMAIL_MFA(challenge) {
+    EMAIL(challenge) {
       document.getElementById('otp-heading').textContent = 'Check your email';
       document.getElementById('otp-subheading').textContent =
         'We\'ve sent a verification code to your email address. Enter it below.';
       PresenceApp._challengeHandlers._OTP.call(this, challenge);
     },
 
-    // EMAIL is the short form used by the session — same UI as EMAIL_MFA.
-    EMAIL(challenge) { PresenceApp._challengeHandlers.EMAIL_MFA.call(this, challenge); },
+    // EMAIL is the short form used by the session — same UI as EMAIL.
+    EMAIL(challenge) { PresenceApp._challengeHandlers.EMAIL.call(this, challenge); },
 
     // ── CALL ───────────────────────────────────────────────────────────────
 
@@ -674,7 +674,7 @@ const PresenceApp = {
     },
 
     /**
-     * Shared OTP handler — used by SMS, SMS_MFA, EMAIL, EMAIL_MFA.
+     * Shared OTP handler — used by SMS, SMS, EMAIL, EMAIL.
      *
      * 4-box MFA input: each box accepts one digit. Typing advances focus
      * to the next box automatically. Backspace moves focus back.

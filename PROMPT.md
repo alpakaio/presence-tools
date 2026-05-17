@@ -108,8 +108,8 @@ Opens front camera (`facingMode: "user"`). Displays a dashed oval guide overlay.
 ### PIN
 Custom PIN pad — no OS keyboard. Dot display grows as digits are entered (always one empty dot ahead, so length is never revealed). Submits `value` as a string. Min 1 digit, max 8.
 
-### SMS / SMS_MFA / EMAIL / EMAIL_MFA
-4-box digit input. Each box accepts one digit. Typing auto-advances focus. Backspace moves focus back. Paste splits a full code across all boxes (handles iOS SMS autofill). `autocomplete="one-time-code"` on the first box triggers OS autofill. Submits `value` as a 4-digit string. `SMS` and `EMAIL` are aliases for `SMS_MFA` and `EMAIL_MFA`.
+### SMS / SMS / EMAIL / EMAIL
+4-box digit input. Each box accepts one digit. Typing auto-advances focus. Backspace moves focus back. Paste splits a full code across all boxes (handles iOS SMS autofill). `autocomplete="one-time-code"` on the first box triggers OS autofill. Submits `value` as a 4-digit string. `SMS` and `EMAIL` are aliases for `SMS` and `EMAIL`.
 
 ### CALL
 Server initiates a voice call. `challenge.value` contains a passphrase the user reads aloud when the call connects. Terminal displays the passphrase and polls the `/call` endpoint:

@@ -124,7 +124,7 @@ Render a PIN pad. Submit the PIN value as a string.
 
 ---
 
-### SMS / SMS_MFA
+### SMS / SMS
 Server sends a 4-digit OTP to the identity's phone number. Terminal shows a 4-box code entry field.
 
 ```json
@@ -135,7 +135,7 @@ The terminal does not send the SMS — the server does when this challenge is re
 
 ---
 
-### EMAIL / EMAIL_MFA
+### EMAIL / EMAIL
 Same as SMS but delivered to the identity's email address.
 
 ```json

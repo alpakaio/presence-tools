@@ -43,8 +43,8 @@ https://app.presence.tools/{sessionId}
 | `GEO` | Silent background location capture — merged into the next challenge's POST |
 | `FACE` | Front camera selfie, captured as JPEG and submitted as base64 |
 | `PIN` | Custom PIN pad — no OS keyboard, dots grow as you type |
-| `SMS` / `SMS_MFA` | 4-digit code sent by SMS, 4-box input with autofill support |
-| `EMAIL` / `EMAIL_MFA` | Same as SMS but delivered by email |
+| `SMS` / `SMS` | 4-digit code sent by SMS, 4-box input with autofill support |
+| `EMAIL` / `EMAIL` | Same as SMS but delivered by email |
 | `CALL` | Server calls the user — terminal shows a passphrase to read aloud, polls for completion |
 | `PASSWORD` | Standard password input |
 | `VIDEO` | 5-second recorded clip of the user saying a phrase, auto-submitted |
