@@ -1,4 +1,4 @@
-# presence.tools — Terminal Reference
+# presence.tools - Terminal Reference
 
 The terminal is the user-facing app that executes a presence event for a specific identity. It loads a session, walks a chain of challenges, and submits results. All business logic lives server-side.
 
@@ -8,21 +8,21 @@ The terminal is the user-facing app that executes a presence event for a specifi
 
 **You don't need to deploy this yourself.**
 
-This terminal is permanently hosted at `app.presence.tools` and is available to all presence.tools customers out of the box. Session links in the format below work immediately — no setup, no infrastructure, no code.
+This terminal is permanently hosted at `app.presence.tools` and is available to all presence.tools customers out of the box. Session links in the format below work immediately - no setup, no infrastructure, no code.
 
 ```
 https://app.presence.tools/{sessionId}
 ```
 
-This repository exists for developers who want to **customise or replace** the terminal — to match their own brand, embed it in an existing app, or extend it with additional behaviour. If that's not you, just use the hosted version.
+This repository exists for developers who want to **customise or replace** the terminal - to match their own brand, embed it in an existing app, or extend it with additional behaviour. If that's not you, just use the hosted version.
 
 ---
 
 ## URL Structure
 
 ```
-https://app.presence.tools/{sessionId}     — hosted, ready to use
-https://{your-app-domain}/{sessionId}      — self-hosted
+https://app.presence.tools/{sessionId}     - hosted, ready to use
+https://{your-app-domain}/{sessionId}      - self-hosted
 ```
 
 The `sessionId` is the only credential. No auth headers, no API keys. The sessionId IS the access token.
@@ -48,17 +48,17 @@ POST {apiBase}/sessions/{sessionId}/{challengeType}
 GET {apiBase}/sessions/{sessionId}
 ```
 
-Returns the full session object. The server marks the session as used on first load — the terminal does not need to do this explicitly.
+Returns the full session object. The server marks the session as used on first load - the terminal does not need to do this explicitly.
 
-**If the session doesn't exist or is expired** — show an error screen.  
-**If `used: true`** — session has already been completed. Show appropriate message.  
-**If current time is outside all location windows** — inform the user they are too early or too late.
+**If the session doesn't exist or is expired** - show an error screen.  
+**If `used: true`** - session has already been completed. Show appropriate message.  
+**If current time is outside all location windows** - inform the user they are too early or too late.
 
 ### 2. Walk the challenge chain
 
 The session contains `challenges: [{ type, ...options }]`. Render and execute them in order.
 
-Each challenge POSTs to its own endpoint. The body is a JSON array containing only the relevant entries — the GEO entry (if captured) followed by the current challenge:
+Each challenge POSTs to its own endpoint. The body is a JSON array containing only the relevant entries - the GEO entry (if captured) followed by the current challenge:
 
 ```json
 POST {apiBase}/sessions/{sessionId}/pin
@@ -86,23 +86,23 @@ POST {apiBase}/sessions/{sessionId}/pin
 
 If the response includes `identityId`, store it and include it in all subsequent challenge POSTs.
 
-On `complete` or `failed` — the server has already updated the event log and fired the webhook. The terminal just shows the result screen.
+On `complete` or `failed` - the server has already updated the event log and fired the webhook. The terminal just shows the result screen.
 
 ---
 
 ## Challenge Types
 
 ### GEO
-Capture the user's location using the browser Geolocation API. GEO never POSTs on its own — coordinates are captured silently and merged into the next challenge's POST body.
+Capture the user's location using the browser Geolocation API. GEO never POSTs on its own - coordinates are captured silently and merged into the next challenge's POST body.
 
 ```json
 { "type": "GEO", "lat": 51.5074, "lng": -0.1278 }
 ```
 
 Options:
-- `maxDistance` — metres. Server checks distance from event locations.
+- `maxDistance` - metres. Server checks distance from event locations.
 
-The terminal does not enforce geo — it captures and submits. The server validates.
+The terminal does not enforce geo - it captures and submits. The server validates.
 
 ---
 
@@ -131,7 +131,7 @@ Server sends a 4-digit OTP to the identity's phone number. Terminal shows a 4-bo
 { "type": "SMS", "value": "1234" }
 ```
 
-The terminal does not send the SMS — the server does when this challenge is reached in the chain.
+The terminal does not send the SMS - the server does when this challenge is reached in the chain.
 
 ---
 
@@ -145,7 +145,7 @@ Same as SMS but delivered to the identity's email address.
 ---
 
 ### CALL
-Server initiates an automated voice call. The challenge object contains a passphrase in `value` that the user reads aloud when prompted. The terminal displays the passphrase and polls for completion — the server returns `{ "status": "next" }` when the call is verified.
+Server initiates an automated voice call. The challenge object contains a passphrase in `value` that the user reads aloud when prompted. The terminal displays the passphrase and polls for completion - the server returns `{ "status": "next" }` when the call is verified.
 
 ```json
 { "type": "CALL", "value": "Victor-Xray-Juliet-Whiskey" }
@@ -193,7 +193,7 @@ Submit the collected form data:
 { "type": "ENROL", "data": { "firstName": "Jane", "lastName": "Smith", "email": "jane@example.com" } }
 ```
 
-If `requiresApproval: true` — the server creates the identity in pending status. The terminal informs the user their enrolment is pending approval.
+If `requiresApproval: true` - the server creates the identity in pending status. The terminal informs the user their enrolment is pending approval.
 
 ---
 
@@ -207,7 +207,7 @@ If `requiresApproval: true` — the server creates the identity in pending statu
     accountId,
     identityId,       // absent for open/enrol sessions; returned once resolved
     configId,
-    name,             // event name — absent if not set
+    name,             // event name - absent if not set
     challenges: [
         { type: 'GEO', maxDistance: 50 },
         { type: 'FACE' },
@@ -246,4 +246,4 @@ The terminal captures, renders, and submits. Nothing more.
 
 ---
 
-*presence.tools — Terminal Reference*
+*presence.tools - Terminal Reference*

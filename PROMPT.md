@@ -1,4 +1,4 @@
-# AI Context — presence.tools Terminal
+# AI Context - presence.tools Terminal
 
 Drop this file into your AI coding session alongside `CONTEXT.md`, `index.html`, and `app.js` to give your assistant full context on the project.
 
@@ -6,9 +6,9 @@ Drop this file into your AI coding session alongside `CONTEXT.md`, `index.html`,
 
 ## What this project is
 
-A single-page web app that executes a **presence event** for a given identity. It is intentionally dumb — it loads a session, walks a chain of identity challenges, and submits results. All business logic, validation, and webhook firing happens server-side. The terminal captures, renders, and submits. Nothing more.
+A single-page web app that executes a **presence event** for a given identity. It is intentionally dumb - it loads a session, walks a chain of identity challenges, and submits results. All business logic, validation, and webhook firing happens server-side. The terminal captures, renders, and submits. Nothing more.
 
-It is a **public reference implementation** — heavily commented, no build step, designed to be read and adapted by developers building on the presence.tools platform.
+It is a **public reference implementation** - heavily commented, no build step, designed to be read and adapted by developers building on the presence.tools platform.
 
 ---
 
@@ -33,7 +33,7 @@ It is a **public reference implementation** — heavily commented, no build step
 ```
 GET /sessions/{sessionId}
 ```
-Returns the full session object. The server marks `used: true` on first load — the terminal does not need to do this explicitly.
+Returns the full session object. The server marks `used: true` on first load - the terminal does not need to do this explicitly.
 
 ### Submit a challenge
 ```
@@ -41,7 +41,7 @@ POST /sessions/{sessionId}/{type}
 ```
 Where `{type}` is the lowercase challenge type: `pin`, `face`, `sms`, `email`, `password`, `video`, `enrol`, `call`.
 
-**Body** is a JSON array containing only the relevant challenges — never the full chain:
+**Body** is a JSON array containing only the relevant challenges - never the full chain:
 ```json
 [
   { "type": "GEO", "lat": 51.5074, "lng": -0.1278 },
@@ -97,16 +97,16 @@ If the response includes `identityId`, it is written to the local session object
 
 ---
 
-## Challenge types — behaviour
+## Challenge types - behaviour
 
 ### GEO
 Silent. Never renders UI. Never POSTs alone. Captures coordinates via the browser Geolocation API (`enableHighAccuracy: true`), stores in `_pendingGeo`, advances immediately to the next challenge. `_respond()` merges the coords into the next challenge's POST body automatically.
 
 ### FACE
-Opens front camera (`facingMode: "user"`). Displays a dashed oval guide overlay. User taps "Take photo" — a JPEG frame is captured via `<canvas>`, converted to base64 (`toDataURL('image/jpeg', 0.85)`), and POSTed as `imageData`. Camera stream is stopped before the network call.
+Opens front camera (`facingMode: "user"`). Displays a dashed oval guide overlay. User taps "Take photo" - a JPEG frame is captured via `<canvas>`, converted to base64 (`toDataURL('image/jpeg', 0.85)`), and POSTed as `imageData`. Camera stream is stopped before the network call.
 
 ### PIN
-Custom PIN pad — no OS keyboard. Dot display grows as digits are entered (always one empty dot ahead, so length is never revealed). Submits `value` as a string. Min 1 digit, max 8.
+Custom PIN pad - no OS keyboard. Dot display grows as digits are entered (always one empty dot ahead, so length is never revealed). Submits `value` as a string. Min 1 digit, max 8.
 
 ### SMS / SMS / EMAIL / EMAIL
 4-box digit input. Each box accepts one digit. Typing auto-advances focus. Backspace moves focus back. Paste splits a full code across all boxes (handles iOS SMS autofill). `autocomplete="one-time-code"` on the first box triggers OS autofill. Submits `value` as a 4-digit string. `SMS` and `EMAIL` are aliases for `SMS` and `EMAIL`.
@@ -122,7 +122,7 @@ Server initiates a voice call. `challenge.value` contains a passphrase the user 
 Standard `type="password"` input. Wrapped in `<form autocomplete="off">` with a non-standard field name to suppress browser password-save prompts. Browser renders its own native show/hide toggle.
 
 ### VIDEO
-Displays `challenge.value` as a phrase the user must say on camera. User taps Start — a 5-second countdown badge overlays the camera feed. Recording stops automatically at 0. Clip is encoded as base64 (`video/webm`) and POSTed as `videoData`. On failure, the user can retry — the camera stream is restarted automatically.
+Displays `challenge.value` as a phrase the user must say on camera. User taps Start - a 5-second countdown badge overlays the camera feed. Recording stops automatically at 0. Clip is encoded as base64 (`video/webm`) and POSTed as `videoData`. On failure, the user can retry - the camera stream is restarted automatically.
 
 ### ENROL
 Dynamic form built from `challenge.fields[]`:
@@ -165,10 +165,10 @@ All managed by `_showState(name)` which shows one `#state-{name}` div and hides 
 |------|--------------|
 | `CONTEXT.md` | Full API reference and session data model |
 | `API_REFERENCE.md` | Request and response examples for every challenge type |
-| `app.js` | All runtime logic — start here to understand the flow |
-| `index.html` | All UI — challenge panels, state screens, styling |
+| `app.js` | All runtime logic - start here to understand the flow |
+| `index.html` | All UI - challenge panels, state screens, styling |
 
 ---
 
-*presence.tools — AI context file*
+*presence.tools - AI context file*
 *Keep this file alongside CONTEXT.md when working with an AI assistant on this project.*

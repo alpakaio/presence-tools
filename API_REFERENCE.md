@@ -1,4 +1,4 @@
-# presence.tools — API Reference
+# presence.tools - API Reference
 
 Base URL: `https://api.dev.presence.tools` (development) · `https://api.presence.tools` (production)
 
@@ -44,7 +44,7 @@ Refresh an existing token before it expires. Pass the current Bearer token in th
 
 **No body required.**
 
-**Response** — same shape as `/auth/token`.
+**Response** - same shape as `/auth/token`.
 
 > Tokens can only be refreshed while still valid. If expired, re-authenticate via `/auth/token`.
 
@@ -58,25 +58,25 @@ A config defines the challenge chain and delivery settings for an event. Create 
 
 | Type | What it verifies | Requires on identity |
 |---|---|---|
-| `GEO` | Device is within `maxDistance` metres of the location | — |
+| `GEO` | Device is within `maxDistance` metres of the location | - |
 | `FACE` | Biometric face match against enrolled identity images | `images` (indexed) |
 | `PIN` | 4-digit PIN known to the identity | `pin` |
 | `PASSWORD` | Free-text password known to the identity | `password` |
 | `SMS` | One-time code sent to the identity's registered cell | `cell` |
 | `EMAIL` | One-time code sent to the identity's registered email | `email` |
-| `CALL` | Automated call to identity's cell — reads back 4 NATO words, caller repeats them | `cell` |
-| `VIDEO` | Video call verification — identity reads back 4 NATO words on screen | — |
-| `ENROL` | Collects form fields from an unknown subject (open events) | — |
+| `CALL` | Automated call to identity's cell - reads back 4 NATO words, caller repeats them | `cell` |
+| `VIDEO` | Video call verification - identity reads back 4 NATO words on screen | - |
+| `ENROL` | Collects form fields from an unknown subject (open events) | - |
 
 > `CALL` and `VIDEO` challenges are stamped with a unique `value` (e.g. `"Bravo-Tango-November-Foxtrot"`) at session creation time. Your terminal reads this to the subject; they repeat it back to confirm.
 
 ### ENROL as identity creation
 
-When a session has no `identityId` (open event) and `ENROL` is the first challenge in the chain, the server creates a new identity from the submitted fields and returns the `identityId` in the response. Every challenge that follows becomes a **setter** — PIN sets the identity's PIN, FACE indexes their photo, SMS sets their cell — rather than a getter that verifies against pre-existing data. This is how self-registration flows work: the subject arrives unknown, enrols, and the remaining challenges build out their identity record in a single session.
+When a session has no `identityId` (open event) and `ENROL` is the first challenge in the chain, the server creates a new identity from the submitted fields and returns the `identityId` in the response. Every challenge that follows becomes a **setter** - PIN sets the identity's PIN, FACE indexes their photo, SMS sets their cell - rather than a getter that verifies against pre-existing data. This is how self-registration flows work: the subject arrives unknown, enrols, and the remaining challenges build out their identity record in a single session.
 
 ### Challenge prerequisites
 
-**Most challenges require pre-existing data on the identity.** A challenge will fail at runtime if the required field is not present — there is no fallback. Design your config and identity creation flow together.
+**Most challenges require pre-existing data on the identity.** A challenge will fail at runtime if the required field is not present - there is no fallback. Design your config and identity creation flow together.
 
 | If you want to use... | The identity must have... | Notes |
 |---|---|---|
@@ -85,16 +85,16 @@ When a session has no `identityId` (open event) and `ENROL` is the first challen
 | `SMS` | `cell` in E.164 format (e.g. `447777666555`) | Used to send the OTP |
 | `EMAIL` | `email` | Used to send the OTP |
 | `CALL` | `cell` | Your system places the call; presence provides the words |
-| `FACE` | `images` array with at least one indexed photo | Indexing is async — allow time after identity creation before using |
-| `GEO` | — | No identity data needed; uses the device location at challenge time |
-| `VIDEO` | — | Your system handles the call; presence provides the words |
-| `ENROL` | — | For open events only — captures data from unknown subjects |
+| `FACE` | `images` array with at least one indexed photo | Indexing is async - allow time after identity creation before using |
+| `GEO` | - | No identity data needed; uses the device location at challenge time |
+| `VIDEO` | - | Your system handles the call; presence provides the words |
+| `ENROL` | - | For open events only - captures data from unknown subjects |
 
 **Design principle:** match your challenge chain to the data you actually have. A check-in flow where you know the worker in advance (closed event) can use `PIN`, `SMS`, or `FACE`. A visitor flow where the subject is unknown should use `GEO` + `ENROL`, not `PIN` or `CALL`. Mixing challenges that require identity data into an open event will fail for every subject.
 
 ### Delivery options
 
-Presence fires the full event object to your system on every state change. Three delivery targets are supported — configure one or more per config.
+Presence fires the full event object to your system on every state change. Three delivery targets are supported - configure one or more per config.
 
 | Target | Fields |
 |---|---|
@@ -102,7 +102,7 @@ Presence fires the full event object to your system on every state change. Three
 | AWS EventBridge | `aws.roleArn`, `aws.eventBridgeBus` |
 | AWS SQS | `aws.roleArn`, `aws.sqsQueueUrl` |
 
-AWS delivery uses cross-account IAM role assumption — no credentials are stored on the platform.
+AWS delivery uses cross-account IAM role assumption - no credentials are stored on the platform.
 
 ---
 
@@ -131,18 +131,20 @@ Create a config.
   "challenges": [
     { "type": "GEO", "maxDistance": 50 },
     { "type": "FACE" }
-    // { type: 'SMS' }
-    // { type: 'EMAIL' }
-    // { type: 'CALL' }
-    // { type: 'PASSWORD' }
-    // { type: 'PIN' }
-    // { type: 'VIDEO' }
-    // { type: 'ENROL', fields: [
-    //     { name: 'firstName',  label: 'First name',  type: 'text',  required: true },
-    //     { name: 'lastName',   label: 'Last name',   type: 'text',  required: true },
-    //     { name: 'email',      label: 'Email',       type: 'email', required: true },
-    //     { name: 'employeeId', label: 'Employee ID', type: 'text',  required: false },
-    // ]}
+    /* 
+    { type: 'SMS' }
+    { type: 'EMAIL' }
+    { type: 'CALL' }
+    { type: 'PASSWORD' }
+    { type: 'PIN' }
+    { type: 'VIDEO' }
+    { type: 'ENROL', fields: [
+        { name: 'firstName',  label: 'First name',  type: 'text',  required: true },
+        { name: 'lastName',   label: 'Last name',   type: 'text',  required: true },
+        { name: 'email',      label: 'Email',       type: 'email', required: true },
+        { name: 'employeeId', label: 'Employee ID', type: 'text',  required: false },
+    ]}
+    */
   ],
   "webhook": {
     "url": "https://your-app.com/webhooks/presence",
@@ -158,7 +160,7 @@ Create a config.
 
 All fields except `name` are optional. `challenges` defaults to `[]`.
 
-**Response** `201` — the created config object.
+**Response** `201` - the created config object.
 
 ---
 
@@ -166,7 +168,7 @@ All fields except `name` are optional. `challenges` defaults to `[]`.
 
 Fetch a single config.
 
-**Response** `200` — the config object.
+**Response** `200` - the config object.
 
 ---
 
@@ -178,7 +180,7 @@ Update config fields. Pass only the fields you want to change.
 { "name": "Strict check-in" }
 ```
 
-**Response** `200` — the updated config object.
+**Response** `200` - the updated config object.
 
 ---
 
@@ -186,7 +188,7 @@ Update config fields. Pass only the fields you want to change.
 
 Soft-delete a config. The record is retained for 30 days then permanently removed.
 
-**Response** `200` — the deleted config object with `active: false`.
+**Response** `200` - the deleted config object with `active: false`.
 
 ---
 
@@ -196,7 +198,7 @@ A location is a named physical place. Presence enriches it with coordinates, geo
 
 ### Input priority
 
-Supply coordinates one of three ways — in priority order:
+Supply coordinates one of three ways - in priority order:
 
 1. `geolocation.lat` + `geolocation.lng`
 2. `geolocation.placeId` (Google Maps place ID)
@@ -249,9 +251,9 @@ Create a location.
 }
 ```
 
-`external` is your own reference ID — useful for linking to your internal system.
+`external` is your own reference ID - useful for linking to your internal system.
 
-**Response** `201` — the created location object, enriched with `geohash`, `timezone`, `placeId`, and `plusCode`.
+**Response** `201` - the created location object, enriched with `geohash`, `timezone`, `placeId`, and `plusCode`.
 
 ---
 
@@ -259,7 +261,7 @@ Create a location.
 
 Fetch a single location.
 
-**Response** `200` — the location object.
+**Response** `200` - the location object.
 
 ---
 
@@ -268,10 +270,10 @@ Fetch a single location.
 Update location fields. Pass only the fields you want to change.
 
 ```json
-{ "name": "Warehouse A — North Wing" }
+{ "name": "Warehouse A - North Wing" }
 ```
 
-**Response** `200` — the updated location object.
+**Response** `200` - the updated location object.
 
 ---
 
@@ -279,17 +281,17 @@ Update location fields. Pass only the fields you want to change.
 
 Soft-delete a location. The record is retained for 30 days then permanently removed.
 
-**Response** `200` — the deleted location object with `active: false`.
+**Response** `200` - the deleted location object with `active: false`.
 
 ---
 
 ## Identities
 
-An identity is a known subject — an employee, contractor, visitor, or any named individual. Identities are scoped to a project.
+An identity is a known subject - an employee, contractor, visitor, or any named individual. Identities are scoped to a project.
 
 ### Uniqueness
 
-The following fields are **unique per project** — a `409` is returned if a duplicate is detected on POST or PUT:
+The following fields are **unique per project** - a `409` is returned if a duplicate is detected on POST or PUT:
 
 - `email`
 - `cell`
@@ -341,7 +343,7 @@ Create an identity.
 
 All fields are optional. `cell` should be in E.164 format without the `+` prefix (e.g. `447777666555`). `meta` is a free-form object for your own data.
 
-**Response** `201` — the created identity object.
+**Response** `201` - the created identity object.
 
 ---
 
@@ -349,7 +351,7 @@ All fields are optional. `cell` should be in E.164 format without the `+` prefix
 
 Fetch a single identity.
 
-**Response** `200` — the identity object.
+**Response** `200` - the identity object.
 
 ---
 
@@ -361,7 +363,7 @@ Update identity fields. Pass only the fields you want to change.
 { "name": { "first": "Jane", "last": "Jones" } }
 ```
 
-**Response** `200` — the updated identity object.
+**Response** `200` - the updated identity object.
 
 ---
 
@@ -369,13 +371,13 @@ Update identity fields. Pass only the fields you want to change.
 
 Soft-delete an identity. The record is retained for 30 days then permanently removed.
 
-**Response** `200` — the deleted identity object with `active: false`.
+**Response** `200` - the deleted identity object with `active: false`.
 
 ---
 
 ## Events
 
-An event is the core unit of work. It defines who should be verified (`identities`), where (`locations`), and using which challenge chain (`configId`). Progress is tracked automatically — you never write to `progress` or `log`.
+An event is the core unit of work. It defines who should be verified (`identities`), where (`locations`), and using which challenge chain (`configId`). Progress is tracked automatically - you never write to `progress` or `log`.
 
 ### The event object
 
@@ -418,11 +420,11 @@ An event is the core unit of work. It defines who should be verified (`identitie
 | `identities` | One or more IDs | Empty array `[]` |
 | `progress.total` | `locations × identities` | `null` |
 | Who can verify | Named identities only | Anyone |
-| Challenge mode | Getter — verifies against existing identity data | Setter — ENROL creates the identity; subsequent challenges populate it |
+| Challenge mode | Getter - verifies against existing identity data | Setter - ENROL creates the identity; subsequent challenges populate it |
 
 ### Sessions
 
-When an event is created, a session is generated for each `identity × event` combination (or one open session if `identities` is empty). Each session has a short URL — distribute these to subjects. The terminal at that URL runs the challenge chain.
+When an event is created, a session is generated for each `identity × event` combination (or one open session if `identities` is empty). Each session has a short URL - distribute these to subjects. The terminal at that URL runs the challenge chain.
 
 ---
 
@@ -467,11 +469,11 @@ Create an event.
 ```
 
 - `configId` is required. Everything else is optional.
-- `locations` and `identities` can be empty arrays — an empty `identities` array creates an open event.
+- `locations` and `identities` can be empty arrays - an empty `identities` array creates an open event.
 - `ttl` is a Unix timestamp. If omitted, defaults to `now + project.eventRetentionDays`. Cannot exceed that default.
-- `progress` and `log` are **server-managed** — do not send them.
+- `progress` and `log` are **server-managed** - do not send them.
 
-**Response** `201` — the full event object including generated `sessions`.
+**Response** `201` - the full event object including generated `sessions`.
 
 ---
 
@@ -479,7 +481,7 @@ Create an event.
 
 Fetch a single event, including current `progress` and full `log`.
 
-**Response** `200` — the event object.
+**Response** `200` - the event object.
 
 ---
 
@@ -487,7 +489,7 @@ Fetch a single event, including current `progress` and full `log`.
 
 Update event fields. `progress` and `log` cannot be overwritten.
 
-If you update `locations`, only sessions where the location window has not yet been responded to will be patched — completed sessions are locked.
+If you update `locations`, only sessions where the location window has not yet been responded to will be patched - completed sessions are locked.
 
 ```json
 {
@@ -503,7 +505,7 @@ If you update `locations`, only sessions where the location window has not yet b
 }
 ```
 
-**Response** `200` — the updated event object.
+**Response** `200` - the updated event object.
 
 ---
 
@@ -511,13 +513,13 @@ If you update `locations`, only sessions where the location window has not yet b
 
 Soft-delete an event and all associated sessions.
 
-**Response** `200` — the deleted event object with `active: false`.
+**Response** `200` - the deleted event object with `active: false`.
 
 ---
 
 ## Sessions
 
-Sessions are the verification terminal. Each session is a challenge chain scoped to a specific event, location, and identity. Session endpoints are **unauthenticated** — they are designed to be hit directly by the terminal running at the session URL.
+Sessions are the verification terminal. Each session is a challenge chain scoped to a specific event, location, and identity. Session endpoints are **unauthenticated** - they are designed to be hit directly by the terminal running at the session URL.
 
 ### GET /sessions/{sessionId}
 
@@ -569,9 +571,9 @@ POST /sessions/{sessionId}/{challengeType}
 ```
 
 `status` values indicate what the terminal should do next:
-- `next` — challenge accepted, proceed to next challenge
-- `complete` — all challenges passed, session done
-- `failed` — challenge failed
+- `next` - challenge accepted, proceed to next challenge
+- `complete` - all challenges passed, session done
+- `failed` - challenge failed
 
 #### POST /sessions/{sessionId}/geo
 
@@ -636,7 +638,7 @@ Two-step: trigger the OTP send, then submit the code.
 
 #### POST /sessions/{sessionId}/call
 
-The session object contains a `value` field on the CALL challenge — four NATO words (e.g. `"Bravo-Tango-November-Foxtrot"`). Your automated call reads these words to the subject. Submit what the subject spoke back.
+The session object contains a `value` field on the CALL challenge - four NATO words (e.g. `"Bravo-Tango-November-Foxtrot"`). Your automated call reads these words to the subject. Submit what the subject spoke back.
 
 ```json
 { "value": "Bravo-Tango-November-Foxtrot" }
@@ -646,7 +648,7 @@ The session object contains a `value` field on the CALL challenge — four NATO 
 
 #### POST /sessions/{sessionId}/video
 
-Same as CALL. The session object contains a `value` on the VIDEO challenge — four NATO words displayed on screen. Submit what the subject read back.
+Same as CALL. The session object contains a `value` on the VIDEO challenge - four NATO words displayed on screen. Submit what the subject read back.
 
 ```json
 { "value": "Golf-Sierra-Kilo-Delta" }
@@ -685,11 +687,11 @@ All endpoints return errors in this shape:
 |---|---|---|
 | `400` | `invalid_request` | Missing or invalid fields |
 | `401` | `invalid_project` / `invalid_token` | Auth failed |
-| `403` | — | API key missing or invalid |
+| `403` | - | API key missing or invalid |
 | `404` | `not_found` | Resource does not exist |
 | `409` | `conflict` | Uniqueness violation (email, cell, pin, external) |
-| `500` | `server_error` | Unexpected error — check CloudWatch |
+| `500` | `server_error` | Unexpected error - check CloudWatch |
 
 ---
 
-*presence.tools API Reference — Last updated May 2026*
+*presence.tools API Reference - Last updated May 2026*
