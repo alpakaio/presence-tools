@@ -70,6 +70,10 @@ A config defines the challenge chain and delivery settings for an event. Create 
 
 > `CALL` and `VIDEO` challenges are stamped with a unique `value` (e.g. `"Bravo-Tango-November-Foxtrot"`) at session creation time. Your terminal reads this to the subject; they repeat it back to confirm.
 
+### ENROL as identity creation
+
+When a session has no `identityId` (open event) and `ENROL` is the first challenge in the chain, the server creates a new identity from the submitted fields and returns the `identityId` in the response. Every challenge that follows becomes a **setter** — PIN sets the identity's PIN, FACE indexes their photo, SMS sets their cell — rather than a getter that verifies against pre-existing data. This is how self-registration flows work: the subject arrives unknown, enrols, and the remaining challenges build out their identity record in a single session.
+
 ### Challenge prerequisites
 
 **Most challenges require pre-existing data on the identity.** A challenge will fail at runtime if the required field is not present — there is no fallback. Design your config and identity creation flow together.
@@ -414,6 +418,7 @@ An event is the core unit of work. It defines who should be verified (`identitie
 | `identities` | One or more IDs | Empty array `[]` |
 | `progress.total` | `locations × identities` | `null` |
 | Who can verify | Named identities only | Anyone |
+| Challenge mode | Getter — verifies against existing identity data | Setter — ENROL creates the identity; subsequent challenges populate it |
 
 ### Sessions
 
