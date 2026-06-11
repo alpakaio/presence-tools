@@ -2,17 +2,27 @@
  * presence.tools — Terminal
  * =========================
  * Reference implementation of the session terminal.
- * Reads a sessionId from the URL path, loads the session from the API,
- * then walks the challenge chain until the server returns complete or failed.
+ * Determines its boot sequence from the URL path, then walks the challenge
+ * chain until the server returns complete or failed.
  *
  * Architecture: one plain JS object (PresenceApp) with no framework, no
  * bundler, no build step. Every method is documented so you can lift
  * individual pieces into your own stack.
  *
- * Flow:
- *   init() → fetchSession() → showSession() → runChallenge() → respond()
- *                                                    ↑______________|
- *                                                    (loops until complete/failed)
+ * URL patterns:
+ *   /events/{eventId}/sessions/{sessionId}  — closed event, session pre-exists
+ *   /events/{eventId}                       — open event, mint a session on arrival
+ *
+ * Flow (closed):
+ *   init() → _fetchSession() → _showSession() → _runChallenge() → _respond()
+ *                                                      ↑________________|
+ * Flow (open):
+ *   init() → _mintSession() → _showSession() → _runChallenge() → _respond()
+ *                                                      ↑________________|
+ *
+ * After boot both flows are identical. All challenge POSTs go to the same
+ * endpoint: POST /events/{eventId}/sessions/{sessionId}
+ * The server always returns the full session object — _session stays current.
  */
 
 const PresenceApp = {
@@ -22,12 +32,10 @@ const PresenceApp = {
   /**
    * Resolve the API base URL from the current hostname.
    *
-   * Rule: if the app is running on *.dev.*, hit the dev API.
-   * Otherwise, assume production. This means the same static bundle
-   * works in both environments — no environment-specific build needed.
+   * Dev:  file://, localhost, or *.dev.*  → api.dev.presence.tools
+   * Prod: app.presence.tools              → api.presence.tools
    *
-   * Dev:  app.dev.presence.tools  → api.dev.presence.tools
-   * Prod: app.presence.tools      → api.presence.tools
+   * The same static bundle works in both environments — no build needed.
    */
   get apiBase() {
     const isFile      = window.location.protocol === 'file:';
@@ -39,42 +47,48 @@ const PresenceApp = {
 
   // ─── State ─────────────────────────────────────────────────────────────────
 
-  /** The sessionId extracted from the URL path. */
+  /** eventId extracted from the URL — present for both open and closed events. */
+  _eventId: null,
+
+  /** sessionId — in the URL for closed events, returned by the server for open events. */
   _sessionId: null,
 
-  /** The full session object returned by GET /sessions/{sessionId}. */
+  /** AbortController for the currently active challenge's event listeners. */
+  _challengeAc: null,
+
+  /**
+   * The full session object. Kept current after every server response —
+   * the server returns the full session on every challenge POST so we
+   * never have a stale local copy.
+   */
   _session: null,
 
   /**
-   * Index into session.challenges — tracks where we are in the chain.
-   * Starts at 0. Advances each time the server returns { status: "next" }.
+   * Index into session.challenges — the first challenge where passed is not true.
+   * Derived from the session after each server response rather than incremented
+   * locally, so the server is always the source of truth on what's been accepted.
    */
   _challengeIndex: 0,
 
-  /**
-   * Coordinates captured by a GEO challenge, held until the next challenge
-   * submits. GEO never POSTs on its own — the coords are merged into the
-   * next challenge's payload so the server receives identity + location together.
-   * Cleared after each use.
-   */
-  _pendingGeo: null,
-
   // ─── Entry point ───────────────────────────────────────────────────────────
 
-  /**
-   * Called on DOMContentLoaded.
-   * Extracts the sessionId, fetches the session, then hands off to showSession().
-   */
   async init() {
-    this._sessionId = this._getSessionId();
+    this._parsePath();
 
-    if (!this._sessionId) {
-      this._showState('error', 'No session ID found in the URL.');
+    if (!this._eventId) {
+      this._showState('error', 'No event found in the URL.');
       return;
     }
 
     try {
-      this._session = await this._fetchSession(this._sessionId);
+      if (this._sessionId) {
+        // Closed event — session was pre-created for a known identity.
+        this._session = await this._fetchSession();
+      } else {
+        // Open event — mint a fresh session on arrival, store the returned sessionId.
+        this._session    = await this._mintSession();
+        this._sessionId  = this._session.sessionId;
+      }
       this._showSession();
     } catch (err) {
       console.error('[PresenceApp] Failed to load session:', err);
@@ -82,36 +96,61 @@ const PresenceApp = {
     }
   },
 
-  // ─── Session loading ───────────────────────────────────────────────────────
+  // ─── URL parsing ───────────────────────────────────────────────────────────
 
   /**
-   * Extract the sessionId from the URL.
+   * Extract eventId and sessionId from the URL path.
    *
-   * Primary:   /abc123            → parts[0] = "abc123"
-   * Fallback:  ?sessionId=abc123  → query param (useful during local dev)
+   * /events/{eventId}/sessions/{sessionId}  → closed event
+   * /events/{eventId}                       → open event
    *
-   * We ignore the path when running from file:// (local double-click open)
-   * because the path will be a filesystem path, not a session ID.
+   * Query param fallback for local dev:
+   *   ?eventId=...&sessionId=...
    */
-  _getSessionId() {
+  _parsePath() {
     const isFile = window.location.protocol === 'file:';
     const params = new URLSearchParams(window.location.search);
     const parts  = window.location.pathname.replace(/^\//, '').split('/');
-    return (!isFile && parts[0]) || params.get('sessionId') || null;
+
+    if (!isFile && parts[0] === 'events' && parts[1]) {
+      this._eventId   = parts[1];
+      this._sessionId = (parts[2] === 'sessions' && parts[3]) ? parts[3] : null;
+    } else {
+      this._eventId   = params.get('eventId')   || null;
+      this._sessionId = params.get('sessionId') || null;
+    }
+  },
+
+  // ─── Session loading ───────────────────────────────────────────────────────
+
+  /**
+   * GET /events/{eventId}/sessions/{sessionId}
+   * Fetches a pre-existing session for a closed event.
+   * Also used by _pollSession to check async challenge (CALL) status.
+   */
+  async _fetchSession() {
+    const res = await fetch(
+      `${this.apiBase}/events/${this._eventId}/sessions/${this._sessionId}`
+    );
+    if (res.status === 404) throw new Error('Session not found or expired.');
+    if (!res.ok)            throw new Error(`Server error (${res.status})`);
+    return res.json();
   },
 
   /**
-   * GET /sessions/{sessionId}
-   *
-   * The server sets used: true on first load — we don't need to do anything
-   * extra to mark the session consumed. The GET itself is the trigger.
+   * POST /events/{eventId}/sessions
+   * Mints a fresh session for an open event.
+   * POST because this creates a record server-side even though no body is sent.
+   * Returns the full session object including the new sessionId.
    */
-  async _fetchSession(sessionId) {
-    const res = await fetch(`${this.apiBase}/sessions/${sessionId}`);
-
-    if (res.status === 404) throw new Error('Session not found or expired.');
-    if (!res.ok)           throw new Error(`Server error (${res.status})`);
-
+  async _mintSession() {
+    const res = await fetch(
+      `${this.apiBase}/events/${this._eventId}/sessions`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+    );
+    if (res.status === 404) throw new Error('Event not found or expired.');
+    if (res.status === 410) throw new Error('This event is no longer active.');
+    if (!res.ok)            throw new Error(`Server error (${res.status})`);
     return res.json();
   },
 
@@ -121,18 +160,16 @@ const PresenceApp = {
    * Inspect the loaded session and decide what to show.
    *
    * Decision tree:
-   *  1. session.used      → show "already used" screen
-   *  2. outside window    → show "too early / too late" screen
+   *  1. session.used      → already completed, show used screen
+   *  2. outside window    → too early or too late
    *  3. otherwise         → apply branding, start challenge chain
    */
   _showSession() {
     const session = this._session;
 
-    // Apply branding regardless of outcome — the header/footer show the
-    // client's name and privacy link even on error screens.
     this._applyBranding(session);
 
-    if (session.used) {
+    if (session.expired) {
       this._showState('used');
       return;
     }
@@ -143,8 +180,7 @@ const PresenceApp = {
       return;
     }
 
-    // All good — start the challenge chain from index 0.
-    this._challengeIndex = 0;
+    this._challengeIndex = this._nextChallengeIndex();
     this._runChallenge();
   },
 
@@ -158,7 +194,6 @@ const PresenceApp = {
       document.getElementById('display-name').textContent = session.displayName;
       document.getElementById('app-header').classList.remove('hidden');
     }
-
     if (session.privacyNoticeUrl) {
       document.getElementById('privacy-link').href = session.privacyNoticeUrl;
       document.getElementById('app-footer').classList.remove('hidden');
@@ -171,13 +206,12 @@ const PresenceApp = {
    * Determine whether the current time falls inside any location's window.
    *
    * Returns:
-   *   'open'    — at least one window is currently open
-   *   'early'   — all windows are in the future
-   *   'late'    — all windows have closed
-   *   'no-windows' — no locations defined (session has no time constraint)
+   *   'open'  — at least one window is currently open
+   *   'early' — all windows are in the future
+   *   'late'  — all windows have closed
    *
-   * The terminal doesn't enforce this — the server will reject out-of-window
-   * responses anyway. We check here to give a friendlier early message.
+   * The terminal doesn't enforce this — the server rejects out-of-window
+   * submissions anyway. We check here to give a friendlier early message.
    */
   _getWindowState(locations) {
     if (!locations || locations.length === 0) return 'open';
@@ -187,35 +221,28 @@ const PresenceApp = {
     let anyPast   = false;
 
     for (const loc of locations) {
-      if (!loc.window) continue; // no time constraint on this location
+      if (!loc.window) continue;
 
       const opens  = new Date(loc.window.opens_at).getTime();
       const closes = new Date(loc.window.closes_at).getTime();
 
-      if (now >= opens && now <= closes) return 'open'; // inside a window → done
+      if (now >= opens && now <= closes) return 'open';
       if (now < opens)  anyFuture = true;
       if (now > closes) anyPast   = true;
     }
 
     if (anyFuture && !anyPast) return 'early';
     if (anyPast)               return 'late';
-    return 'open'; // all locations have no window constraints
+    return 'open';
   },
 
-  /**
-   * Show the window-state screen with appropriate messaging.
-   */
   _showWindowState(state, locations) {
     document.getElementById('window-heading').textContent =
       state === 'early' ? 'You\'re a little early' : 'This session has closed';
 
-    // Find the next opening / last close to give the user context.
     const times = (locations || [])
       .filter(l => l.window)
-      .map(l => ({
-        opens:  new Date(l.window.opens_at),
-        closes: new Date(l.window.closes_at),
-      }));
+      .map(l => ({ opens: new Date(l.window.opens_at), closes: new Date(l.window.closes_at) }));
 
     let message = '';
     if (state === 'early' && times.length > 0) {
@@ -230,7 +257,6 @@ const PresenceApp = {
     this._showState('window');
   },
 
-  /** Format a Date as a human-readable time string in the user's local timezone. */
   _formatTime(date) {
     return date.toLocaleString(undefined, {
       weekday: 'short', month: 'short', day: 'numeric',
@@ -243,122 +269,116 @@ const PresenceApp = {
   /**
    * Render the current challenge.
    *
-   * Challenges come from session.challenges[] in order. We track position
-   * with _challengeIndex. Each call to _runChallenge() renders one challenge
-   * and wires up its submit handler.
-   *
-   * When the server returns { status: "next" }, we advance _challengeIndex
-   * and call _runChallenge() again. This is the loop.
+   * Challenges come from session.challenges[] in order. _challengeIndex
+   * tracks position. Each call renders one challenge and wires up its
+   * submit handler. When the server returns { status: "next" }, we
+   * increment and call again — this is the loop.
    */
-  _runChallenge() {
+  _runChallenge(retryMessage) {
     const challenges = this._session.challenges;
     const challenge  = challenges[this._challengeIndex];
 
     if (!challenge) {
-      // No more challenges — this shouldn't happen normally because the
-      // server sends { status: "complete" } on the last one, but guard anyway.
       this._showState('complete');
       return;
     }
 
-    // Update the progress bar before showing the challenge UI.
     this._updateProgress(this._challengeIndex, challenges.length);
-
-    // Show the challenge panel.
     this._showState('challenge');
 
-    // Delegate to the type-specific renderer.
-    const type = challenge.type;
-    const handler = this._challengeHandlers[type];
+    const handler = this._challengeHandlers[challenge.type];
 
     if (!handler) {
-      // Unknown challenge type — surface it clearly so developers can debug.
-      this._showState('error', `Unknown challenge type: "${type}". Is your terminal up to date?`);
+      this._showState('error', `Unknown challenge type: "${challenge.type}". Is your terminal up to date?`);
       return;
     }
 
-    // Hide all challenge panels, then show the right one.
-    document.querySelectorAll('[id^="challenge-"]').forEach(el => el.classList.add('hidden'));
+    // Abort any listeners from the previous challenge before mounting the next.
+    if (this._challengeAc) this._challengeAc.abort();
+    this._challengeAc = new AbortController();
 
-    handler.call(this, challenge);
+    document.querySelectorAll('[id^="challenge-"]').forEach(el => el.classList.add('hidden'));
+    handler.call(this, challenge, this._challengeAc.signal, retryMessage);
   },
 
   /**
-   * Update the progress bar and label.
-   * index is 0-based; total is session.challenges.length.
+   * Find the index of the first challenge not yet passed, or whose pass is
+   * stale (completedAt > 5 minutes ago in UTC). Both Date.now() and ISO
+   * completedAt strings from the server are UTC, so the comparison is exact.
+   * Used on boot to resume a session; mid-session the server drives advancement.
    */
-  _updateProgress(index, total) {
-    const step    = index + 1;
-    const pct     = (step / total) * 100;
+  _nextChallengeIndex() {
+    const challenges    = this._session.challenges || [];
+    const fiveMinAgoUtc = Date.now() - 5 * 60 * 1000;
+    const idx = challenges.findIndex(c => {
+      if (!c.passed) return true;
+      if (!c.completedAt) return true;
+      return new Date(c.completedAt).getTime() < fiveMinAgoUtc;
+    });
+    return idx === -1 ? challenges.length : idx;
+  },
 
-    document.getElementById('progress-bar-fill').style.width = `${pct}%`;
+  _updateProgress(index, total) {
+    const step = index + 1;
+    document.getElementById('progress-bar-fill').style.width = `${(step / total) * 100}%`;
     document.getElementById('progress-label').textContent    = `${step} of ${total}`;
   },
 
-  // ─── API: submit a challenge response ─────────────────────────────────────
+  // ─── API ───────────────────────────────────────────────────────────────────
 
   /**
-   * POST /sessions/{sessionId}/{type}  (e.g. /pin, /face, /SMS)
+   * POST /events/{eventId}/sessions/{sessionId}
    *
-   * Body is a challenges array: always just the GEO entry (if captured) plus
-   * this challenge with its captured value populated. Sending only these two
-   * avoids putting the full chain — including other blobs — over the wire.
-   *
-   *   POST /sessions/abc123/pin
+   * Body is an array of challenge objects. Normally one entry, but if a GEO
+   * challenge preceded this one in the chain a second entry is appended:
    *   [
-   *     { "type": "GEO", "lat": 51.5, "lng": -0.1 },
-   *     { "type": "PIN", "value": "1234" }
+   *     { type: "FACE", imageData: "..." },
+   *     { type: "GEO",  lat: 51.5, lng: -0.1 }
    *   ]
    *
-   * Each challenge type has its own endpoint so server-side handlers can be
-   * isolated independently (separate Lambdas, IAM policies, etc.).
-   *
-   * Server response:
-   *   { status: "next",     challenge: { type } }         → advance
-   *   { status: "complete", success: true, confidence }   → done
-   *   { status: "failed",   reason: "PIN_INCORRECT" }     → rejected
+   * The server always returns the full session object. _session is updated
+   * from every response so it never goes stale.
    */
   async _respond(challenge) {
-    // Build the challenges array: GEO first (if captured), then this challenge.
-    // identityId is appended to each challenge entry once the server has
-    // resolved it — this scopes subsequent verifications to that identity.
-    const identityId = this._session.identityId;
-    const body = [];
-    if (this._pendingGeo) {
-      body.push({ type: 'GEO', ...this._pendingGeo, ...(identityId && { identityId }) });
-      this._pendingGeo = null;
-    }
-    body.push({ ...challenge, ...(identityId && { identityId }) });
+    const body = [challenge];
 
-    // Endpoint is the lowercase challenge type: /sessions/{id}/pin, /face, etc.
-    const endpoint = challenge.type.toLowerCase();
+    const res = await fetch(
+      `${this.apiBase}/events/${this._eventId}/sessions/${this._sessionId}`,
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      }
+    );
 
-    const res = await fetch(`${this.apiBase}/sessions/${this._sessionId}/${endpoint}`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body),
-    });
-
-    if (!res.ok) throw new Error(`Server error (${res.status})`);
-    return res.json();
+    const data = await res.json();
+    if (!res.ok && !data.status) throw new Error(`Server error (${res.status})`);
+    return data;
   },
 
   /**
    * Handle the server's response after a challenge submission.
    *
-   * Called by every challenge handler after a successful _respond() call.
-   * Centralises the status-routing logic so individual handlers stay lean.
+   * The server always returns the full session object — we update _session
+   * first so any subsequent calls have fresh data.
+   *
+   *   next     → advance to next challenge
+   *   pending  → async challenge in progress (CALL) — poll until resolved
+   *   complete → all challenges passed
+   *   failed   → challenge rejected
    */
   _handleResponse(result) {
-    // If the server resolved an identity from this challenge, store it on the
-    // session so all subsequent challenge POSTs include it in the body.
-    if (result.identityId) {
-      this._session.identityId = result.identityId;
-    }
+    // Keep local session fresh from every server response.
+    this._session = result;
 
     if (result.status === 'next') {
-      this._challengeIndex++;
+      this._challengeIndex = this._nextChallengeIndex();
       this._runChallenge();
+
+    } else if (result.status === 'pending') {
+      // CALL is async — the server resolves it when the call completes.
+      // Poll by re-fetching the session every 5 seconds.
+      setTimeout(() => this._pollSession(), 5000);
 
     } else if (result.status === 'complete') {
       if (result.confidence != null) {
@@ -369,22 +389,57 @@ const PresenceApp = {
       this._showState('complete');
 
     } else if (result.status === 'failed') {
-      // Map server reason codes to human-readable copy.
-      const reasons = {
-        PIN_INCORRECT:   'Incorrect PIN. Please contact the event organiser.',
-        FACE_NOT_FOUND:  'We couldn\'t match your face. Please try again.',
-        FACE_LOW_CONF:   'Face match confidence too low. Please try again in better lighting.',
-        OTP_INCORRECT:   'Incorrect code. Please check and try again.',
-        OTP_EXPIRED:     'That code has expired. Please request a new one.',
-        PASSWORD_WRONG:  'Incorrect password.',
-        GEO_TOO_FAR:     'You\'re not in the right location for this event.',
+      // Derive reason from the failed challenge if the server doesn't send one.
+      const failedChallenge = (result.challenges || []).find(c => c.passed === false);
+      const inferredReason  = result.reason || (failedChallenge && {
+        PIN:      'PIN_INCORRECT',
+        PASSWORD: 'PASSWORD_WRONG',
+        FACE:     'FACE_NOT_FOUND',
+        SMS:      'OTP_INCORRECT',
+        EMAIL:    'OTP_INCORRECT',
+        GEO:      'GEO_TOO_FAR',
+        CALL:     'CALL_NOT_VERIFIED',
+      }[failedChallenge.type]);
+
+      const messages = {
+        PIN_INCORRECT:     'Incorrect PIN. Please try again.',
+        FACE_NOT_FOUND:    'We couldn\'t match your face. Please try again.',
+        FACE_LOW_CONF:     'Face match confidence too low. Try again in better lighting.',
+        OTP_INCORRECT:     'Incorrect code. Please check and try again.',
+        OTP_EXPIRED:       'That code has expired. Please request a new one.',
+        PASSWORD_WRONG:    'Incorrect password. Please try again.',
+        GEO_TOO_FAR:       'You\'re not in the right location for this event.',
+        CALL_NOT_VERIFIED: 'We couldn\'t verify the call. Please try again.',
       };
-      const message = reasons[result.reason] || `Verification failed (${result.reason || 'unknown'}).`;
-      document.getElementById('failed-message').textContent = message;
-      this._showState('failed');
+      const message = messages[inferredReason] || `Verification failed (${inferredReason || 'unknown'}).`;
+
+      const retryable = ['PIN_INCORRECT', 'FACE_NOT_FOUND', 'FACE_LOW_CONF',
+                         'OTP_INCORRECT', 'OTP_EXPIRED', 'PASSWORD_WRONG'];
+      if (retryable.includes(inferredReason)) {
+        this._runChallenge(message);
+      } else {
+        document.getElementById('failed-message').textContent = message;
+        this._showState('failed');
+      }
 
     } else {
       this._showState('error', 'Unexpected response from server.');
+    }
+  },
+
+  /**
+   * Poll the session until an async challenge resolves.
+   * Used by CALL — the server updates session.status to "next" or "failed"
+   * when the call outcome is known. We re-use _handleResponse to route it.
+   */
+  async _pollSession() {
+    try {
+      const result = await this._fetchSession();
+      this._handleResponse(result);
+    } catch (err) {
+      console.warn('[PresenceApp] Poll failed:', err);
+      // Retry after 5s — network blip shouldn't abort a CALL in progress.
+      setTimeout(() => this._pollSession(), 5000);
     }
   },
 
@@ -392,78 +447,95 @@ const PresenceApp = {
 
   /**
    * Each handler receives the challenge object from session.challenges[].
-   * It is responsible for:
-   *   1. Showing the right #challenge-X panel
-   *   2. Collecting input from the user
-   *   3. Calling _respond() with the right payload
-   *   4. Calling _handleResponse() with the result
-   *
-   * Handlers set a status message via a #xxx-status element while working.
+   * Responsibilities:
+   *   1. Show the right #challenge-X panel
+   *   2. Collect input from the user
+   *   3. Call _respond() with the challenge + captured value
+   *   4. Call _handleResponse() with the result
    */
   _challengeHandlers: {
 
     // ── GEO ────────────────────────────────────────────────────────────────
 
     /**
-     * GEO: capture coordinates silently in the background, then immediately
-     * advance to the next challenge. The coords are held in _pendingGeo and
-     * merged into the next challenge's POST payload by _respond().
-     *
-     * GEO never renders a UI panel and never POSTs on its own — it always
-     * accompanies an identity challenge (FACE, PIN, etc.) in the chain.
-     *
-     * enableHighAccuracy: true requests GPS rather than cell/wifi triangulation,
-     * needed for tight maxDistance constraints (e.g. < 50m).
+     * GEO: request location, show a waiting screen, POST coords on success.
+     * On denial or timeout: show an error with a retry button.
      */
-    async GEO(challenge) {
-      try {
-        const pos = await new Promise((resolve, reject) =>
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 15000,
-          })
+    GEO(challenge, signal) {
+      const panel    = document.getElementById('challenge-GEO');
+      const spinner  = document.getElementById('geo-spinner');
+      const status   = document.getElementById('geo-status');
+      const retryBtn = document.getElementById('geo-retry-btn');
+
+      panel.classList.remove('hidden');
+
+      function attempt() {
+        spinner.classList.remove('hidden');
+        retryBtn.classList.add('hidden');
+        status.textContent = 'Allow location access when prompted.';
+
+        navigator.geolocation.getCurrentPosition(
+          async pos => {
+            status.textContent = 'Got it, submitting...';
+            try {
+              const result = await PresenceApp._respond({
+                type: 'GEO',
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+              });
+              PresenceApp._handleResponse(result);
+            } catch (err) {
+              status.textContent = 'Failed to submit location. Please try again.';
+              spinner.classList.add('hidden');
+              retryBtn.classList.remove('hidden');
+            }
+          },
+          err => {
+            spinner.classList.add('hidden');
+            if (err.code === 1) {
+              status.textContent = 'Location access was denied. Please enable it in your browser settings and try again.';
+            } else if (err.code === 3) {
+              status.textContent = 'Location request timed out. Please try again.';
+            } else {
+              status.textContent = 'Could not get your location. Please try again.';
+            }
+            retryBtn.classList.remove('hidden');
+          },
+          { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
         );
-        PresenceApp._pendingGeo = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-      } catch (err) {
-        // Non-fatal: if the user denies or location is unavailable, we advance
-        // anyway without coords. The server will decide whether to reject.
-        console.warn('[PresenceApp] GEO capture failed:', err);
-        PresenceApp._pendingGeo = null;
       }
 
-      // Advance immediately — no user interaction required.
-      PresenceApp._challengeIndex++;
-      PresenceApp._runChallenge();
+      retryBtn.addEventListener('click', attempt, { signal });
+      attempt();
     },
 
     // ── FACE ───────────────────────────────────────────────────────────────
 
     /**
-     * FACE: open the front camera, capture a JPEG frame via canvas, send base64.
+     * FACE: open the front camera, capture a JPEG frame, submit as base64.
      *
-     * getUserMedia with facingMode: "user" requests the front/selfie camera.
-     * We draw a single video frame onto a hidden canvas, then export it as JPEG.
-     * quality: 0.85 balances file size vs. recognition accuracy.
-     *
-     * The server runs Rekognition SearchFacesByImage against the project's
-     * face collection and returns a confidence score.
+     * facingMode: "user" requests the selfie camera.
+     * Canvas captures one frame from the live video stream.
+     * quality: 0.85 balances payload size vs. Rekognition accuracy.
+     * Camera stream is stopped before the network call to free hardware.
      */
-    async FACE(challenge) {
-      const panel   = document.getElementById('challenge-FACE');
-      const video   = document.getElementById('face-preview');
-      const canvas  = document.getElementById('face-canvas');
-      const btn     = document.getElementById('face-btn');
-      const status  = document.getElementById('face-status');
+    async FACE(challenge, signal, retryMessage) {
+      const panel  = document.getElementById('challenge-FACE');
+      const video  = document.getElementById('face-preview');
+      const canvas = document.getElementById('face-canvas');
+      const btn    = document.getElementById('face-btn');
+      const status = document.getElementById('face-status');
 
       panel.classList.remove('hidden');
+      btn.disabled       = false;
+      status.textContent = retryMessage || '';
+      status.classList.toggle('text-red-500', !!retryMessage);
 
-      // Start camera stream.
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        video.srcObject = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user' },
           audio: false,
         });
-        video.srcObject = stream;
       } catch (err) {
         status.textContent = 'Camera permission denied. Please allow access and reload.';
         btn.disabled = true;
@@ -474,16 +546,16 @@ const PresenceApp = {
         btn.disabled = true;
         status.textContent = 'Capturing…';
 
-        // Match canvas size to video feed to avoid distortion.
-        canvas.width  = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext('2d').drawImage(video, 0, 0);
+        const size   = Math.min(video.videoWidth, video.videoHeight);
+        const cropX  = Math.floor((video.videoWidth - size) / 2);
+        const cropY  = Math.floor((video.videoHeight - size) / 2);
+        canvas.width  = size;
+        canvas.height = size;
+        canvas.getContext('2d').drawImage(video, cropX, cropY, size, size, 0, 0, size, size);
 
         const imageData = canvas.toDataURL('image/jpeg', 0.85);
 
-        // Stop the camera stream — free the hardware before the network call.
         video.srcObject.getTracks().forEach(t => t.stop());
-
         status.textContent = 'Submitting…';
 
         try {
@@ -493,21 +565,19 @@ const PresenceApp = {
           status.textContent = 'Failed to submit photo. Please try again.';
           btn.disabled = false;
         }
-      });
+      }, { signal });
     },
 
     // ── PIN ────────────────────────────────────────────────────────────────
 
     /**
-     * PIN: custom PIN pad (no OS keyboard).
+     * PIN: custom PIN pad — no OS keyboard appears.
      *
-     * We build a dot-display to show how many digits have been entered without
-     * revealing the digits themselves. The submit button activates once the
-     * user has entered at least one digit (server determines required length).
-     *
-     * We don't enforce a specific length client-side — that's the server's job.
+     * Dot display grows as digits are entered: always one empty dot ahead
+     * so the required length is never revealed to the user.
+     * Server determines the required length — we don't enforce it client-side.
      */
-    PIN(challenge) {
+    PIN(challenge, signal, retryMessage) {
       const panel   = document.getElementById('challenge-PIN');
       const display = document.getElementById('pin-display');
       const submit  = document.getElementById('pin-submit');
@@ -515,39 +585,36 @@ const PresenceApp = {
       const status  = document.getElementById('pin-status');
 
       panel.classList.remove('hidden');
+      status.textContent = retryMessage || '';
+      status.classList.toggle('text-red-500', !!retryMessage);
 
       let pin = '';
 
-      /** Redraw the dot display to reflect current pin length. */
       function updateDisplay() {
-        // Show one dot per entered digit, plus one empty dot as the next slot.
-        // This way the length is never revealed — it just grows as you type.
         const total = pin.length + 1;
         display.innerHTML = Array.from({ length: total }, (_, i) =>
           `<div class="w-3.5 h-3.5 rounded-full border-2 ${
             i < pin.length ? 'bg-gray-900 border-gray-900' : 'border-gray-300'
           }"></div>`
         ).join('');
-
         submit.disabled = pin.length === 0;
       }
 
       updateDisplay();
 
-      // Digit keys: data-value is set in the event delegation below.
       document.querySelectorAll('.pin-key').forEach(key => {
-        if (key === back) return; // handled separately
+        if (key === back) return;
         key.addEventListener('click', () => {
           if (pin.length >= 8) return;
           pin += key.textContent;
           updateDisplay();
-        });
+        }, { signal });
       });
 
       back.addEventListener('click', () => {
         pin = pin.slice(0, -1);
         updateDisplay();
-      });
+      }, { signal });
 
       submit.addEventListener('click', async () => {
         submit.disabled = true;
@@ -561,127 +628,41 @@ const PresenceApp = {
           pin = '';
           updateDisplay();
         }
-      });
+      }, { signal });
     },
 
-    // ── SMS ────────────────────────────────────────────────────────────
+    // ── SMS ────────────────────────────────────────────────────────────────
 
     /**
-     * SMS: OTP delivered via SMS.
-     *
-     * The server sends the SMS when this challenge is reached in the chain.
-     * We just show an input field. autocomplete="one-time-code" enables
-     * iOS and Android to offer autofill from the SMS notification.
+     * SMS: server sends a 4-digit OTP to the identity's phone number.
+     * Terminal shows 4 individual digit boxes.
+     * autocomplete="one-time-code" on the first box triggers iOS/Android
+     * SMS autofill — the OS fills all four digits from the notification.
      */
-    SMS(challenge) {
-      document.getElementById('otp-heading').textContent = 'Check your messages';
-      document.getElementById('otp-subheading').textContent =
-        'We\'ve sent a verification code to your phone. Enter it below.';
-      PresenceApp._challengeHandlers._OTP.call(this, challenge);
+    SMS(challenge, signal, retryMessage) {
+      document.getElementById('otp-heading').textContent = 'Check your texts';
+      document.getElementById('otp-subheading').innerHTML =
+        'We\'ve sent a verification code by SMS.<br>Enter it below.';
+      PresenceApp._challengeHandlers._OTP.call(this, challenge, signal, retryMessage);
     },
 
-    // SMS is the short form used by the session — same UI as SMS.
-    SMS(challenge) { PresenceApp._challengeHandlers.SMS.call(this, challenge); },
+    // ── EMAIL ──────────────────────────────────────────────────────────────
 
-    // ── EMAIL ──────────────────────────────────────────────────────────
-
-    EMAIL(challenge) {
+    EMAIL(challenge, signal, retryMessage) {
       document.getElementById('otp-heading').textContent = 'Check your email';
-      document.getElementById('otp-subheading').textContent =
-        'We\'ve sent a verification code to your email address. Enter it below.';
-      PresenceApp._challengeHandlers._OTP.call(this, challenge);
-    },
-
-    // EMAIL is the short form used by the session — same UI as EMAIL.
-    EMAIL(challenge) { PresenceApp._challengeHandlers.EMAIL.call(this, challenge); },
-
-    // ── CALL ───────────────────────────────────────────────────────────────
-
-    /**
-     * CALL: the server initiates a voice call containing a spoken prompt.
-     * The challenge object includes `value` — a passphrase the user reads aloud.
-     *
-     * Polling strategy:
-     *   - Wait 10s before first poll (call can't complete faster than that)
-     *   - Poll with exponential backoff: 10s → 15s → 22s → ...
-     *   - Give up after 60s total elapsed, show a retry button
-     *   - Retry restarts the whole sequence from scratch
-     *
-     * The server returns { status: "next" } when the call completes successfully.
-     */
-    CALL(challenge) {
-      const panel  = document.getElementById('challenge-CALL');
-      const status = document.getElementById('call-status');
-      const retry  = document.getElementById('call-retry');
-
-      document.getElementById('call-passphrase').textContent = challenge.value || '';
-      panel.classList.remove('hidden');
-
-      function startPolling() {
-        retry.classList.add('hidden');
-        status.textContent = 'Waiting for the call to complete…';
-
-        const INITIAL_DELAY  = 10000; // ms before first poll
-        const BACKOFF_FACTOR = 1.5;   // multiply interval each attempt
-        const GIVE_UP_AFTER  = 60000; // ms total before showing retry
-
-        let elapsed  = 0;
-        let interval = INITIAL_DELAY;
-        let timer;
-
-        function scheduleNext() {
-          timer = setTimeout(async () => {
-            elapsed += interval;
-
-            try {
-              const result = await PresenceApp._respond({ ...challenge });
-              if (result.status === 'next' || result.status === 'complete' || result.status === 'failed') {
-                // Server has resolved — hand off to the standard response handler.
-                PresenceApp._handleResponse(result);
-                return;
-              }
-              // status === something unexpected — keep polling if time remains
-            } catch (err) {
-              // Network error — keep polling silently, don't alarm the user
-              console.warn('[PresenceApp] CALL poll error:', err);
-            }
-
-            if (elapsed >= GIVE_UP_AFTER) {
-              status.textContent = 'We couldn\'t confirm the call completed. Please try again.';
-              retry.classList.remove('hidden');
-              return;
-            }
-
-            // Back off and schedule the next attempt.
-            interval = Math.round(interval * BACKOFF_FACTOR);
-            scheduleNext();
-
-          }, interval);
-        }
-
-        scheduleNext();
-
-        // Return a cancel function so retry can clear the pending timer.
-        return () => clearTimeout(timer);
-      }
-
-      let cancel = startPolling();
-
-      retry.addEventListener('click', () => {
-        cancel(); // clear any pending timer from the previous attempt
-        cancel = startPolling();
-      });
+      document.getElementById('otp-subheading').innerHTML =
+        'We\'ve sent a verification code to your email address.<br>Enter it below.';
+      PresenceApp._challengeHandlers._OTP.call(this, challenge, signal, retryMessage);
     },
 
     /**
-     * Shared OTP handler — used by SMS, SMS, EMAIL, EMAIL.
+     * Shared OTP handler for SMS and EMAIL.
      *
-     * 4-box MFA input: each box accepts one digit. Typing advances focus
-     * to the next box automatically. Backspace moves focus back.
-     * autocomplete="one-time-code" on the first box lets iOS/Android autofill
-     * the entire code from an SMS notification.
+     * 4 individual digit boxes — typing auto-advances focus, backspace moves back.
+     * Paste handling splits a full code across all boxes (iOS SMS autofill
+     * pastes the whole string into the first box).
      */
-    _OTP(challenge) {
+    _OTP(challenge, signal, retryMessage) {
       const panel  = document.getElementById('challenge-OTP');
       const boxes  = Array.from(document.querySelectorAll('.otp-box'));
       const submit = document.getElementById('otp-submit');
@@ -689,33 +670,25 @@ const PresenceApp = {
 
       panel.classList.remove('hidden');
 
-      // Reset all boxes and state from any previous OTP challenge.
       boxes.forEach(b => b.value = '');
       submit.disabled    = true;
-      status.textContent = '';
+      status.textContent = retryMessage || '';
+      status.classList.toggle('text-red-500', !!retryMessage);
 
       function currentCode() { return boxes.map(b => b.value).join(''); }
 
       boxes.forEach((box, i) => {
         box.addEventListener('input', () => {
-          // Keep only the last digit typed (handles paste-one-char edge case).
           box.value = box.value.replace(/\D/g, '').slice(-1);
-
-          if (box.value && i < boxes.length - 1) {
-            boxes[i + 1].focus();
-          }
-
+          if (box.value && i < boxes.length - 1) boxes[i + 1].focus();
           submit.disabled = currentCode().length < boxes.length;
-        });
+        }, { signal });
 
         box.addEventListener('keydown', e => {
-          if (e.key === 'Backspace' && !box.value && i > 0) {
-            boxes[i - 1].focus();
-          }
-        });
+          if (e.key === 'Backspace' && !box.value && i > 0) boxes[i - 1].focus();
+        }, { signal });
 
-        // Handle SMS autofill: iOS pastes the full code into the first box.
-        // Split it across all boxes automatically.
+        // iOS pastes the full OTP into the first box — split it across all boxes.
         box.addEventListener('paste', e => {
           const pasted = (e.clipboardData || window.clipboardData)
             .getData('text').replace(/\D/g, '');
@@ -725,7 +698,7 @@ const PresenceApp = {
             submit.disabled = currentCode().length < boxes.length;
             boxes[boxes.length - 1].focus();
           }
-        });
+        }, { signal });
       });
 
       submit.addEventListener('click', async () => {
@@ -739,28 +712,86 @@ const PresenceApp = {
           status.textContent = 'Failed to verify. Please try again.';
           submit.disabled = false;
         }
-      });
+      }, { signal });
 
       setTimeout(() => boxes[0].focus(), 300);
     },
 
+    // ── CALL ───────────────────────────────────────────────────────────────
+
+    /**
+     * CALL: server initiates a voice call. challenge.value is a passphrase
+     * the user reads aloud when prompted.
+     *
+     * The terminal POSTs once to register the challenge, then _handleResponse
+     * routes the "pending" status to _pollSession which polls GET /sessions
+     * every 5 seconds until the server returns "next" or "failed".
+     *
+     * A retry button appears if the user wants to trigger another call attempt.
+     */
+    async CALL(challenge, signal) {
+      const panel  = document.getElementById('challenge-CALL');
+      const status = document.getElementById('call-status');
+      const retry  = document.getElementById('call-retry');
+
+      document.getElementById('call-passphrase').textContent = challenge.value || '';
+      panel.classList.remove('hidden');
+      status.textContent = 'Waiting for the call to complete…';
+
+      // POST once — server initiates the call and returns { status: "pending" }.
+      // _handleResponse takes over from here and starts polling via _pollSession.
+      try {
+        const result = await PresenceApp._respond({ ...challenge });
+        PresenceApp._handleResponse(result);
+      } catch (err) {
+        status.textContent = 'Failed to initiate call. Please try again.';
+        retry.classList.remove('hidden');
+      }
+
+      retry.addEventListener('click', async () => {
+        retry.classList.add('hidden');
+        status.textContent = 'Waiting for the call to complete…';
+        try {
+          const result = await PresenceApp._respond({ ...challenge });
+          PresenceApp._handleResponse(result);
+        } catch (err) {
+          status.textContent = 'Failed to initiate call. Please try again.';
+          retry.classList.remove('hidden');
+        }
+      }, { signal });
+    },
+
     // ── PASSWORD ───────────────────────────────────────────────────────────
 
-    PASSWORD(challenge) {
-      const panel   = document.getElementById('challenge-PASSWORD');
-      const input   = document.getElementById('password-input');
-      const submit  = document.getElementById('password-submit');
-      const status  = document.getElementById('password-status');
+    PASSWORD(challenge, signal, retryMessage) {
+      const panel    = document.getElementById('challenge-PASSWORD');
+      const input    = document.getElementById('password-input');
+      const submit   = document.getElementById('password-submit');
+      const status   = document.getElementById('password-status');
+      const toggle   = document.getElementById('password-toggle');
+      const eyeShow  = document.getElementById('password-eye-show');
+      const eyeHide  = document.getElementById('password-eye-hide');
 
       panel.classList.remove('hidden');
 
       input.value        = '';
+      input.type         = 'password';
+      eyeShow.classList.remove('hidden');
+      eyeHide.classList.add('hidden');
       submit.disabled    = true;
-      status.textContent = '';
+      status.textContent = retryMessage || '';
+      status.classList.toggle('text-red-500', !!retryMessage);
+
+      toggle.addEventListener('click', () => {
+        const isPassword = input.type === 'password';
+        input.type = isPassword ? 'text' : 'password';
+        eyeShow.classList.toggle('hidden', isPassword);
+        eyeHide.classList.toggle('hidden', !isPassword);
+      }, { signal });
 
       input.addEventListener('input', () => {
         submit.disabled = input.value.length === 0;
-      });
+      }, { signal });
 
       submit.addEventListener('click', async () => {
         submit.disabled = true;
@@ -773,7 +804,7 @@ const PresenceApp = {
           status.textContent = 'Failed to submit. Please try again.';
           submit.disabled = false;
         }
-      });
+      }, { signal });
 
       setTimeout(() => input.focus(), 300);
     },
@@ -781,31 +812,58 @@ const PresenceApp = {
     // ── VIDEO ───────────────────────────────────────────────────────────────
 
     /**
-     * VIDEO: user records themselves saying challenge.value, max 5 seconds.
+     * VIDEO: user records themselves saying challenge.value, ~8 seconds.
      *
      * Flow:
-     *   1. Open front camera, display the phrase from challenge.value
-     *   2. User taps Start — countdown begins (5, 4, 3, 2, 1)
-     *   3. Recording stops automatically at 0 — no manual stop needed
-     *   4. Clip is converted to base64 and POSTed immediately
+     *   1. GET /video/challenge to fetch a token (60s expiry)
+     *   2. Display the phrase and Start button
+     *   3. On tap — capture a still frame from the live preview, start recording
+     *   4. Countdown 8→1, auto-stop
+     *   5. POST { type, frame, video, token }
      *
-     * MediaRecorder collects chunks into an array, assembled into a Blob on stop.
-     * video/webm is the most widely supported format across mobile browsers.
+     * Nonce expires in 60 seconds. A 55s timer re-fetches it and resets the UI
+     * so the user always has a fresh token ready when they tap Start.
      */
-    async VIDEO(challenge) {
-      const panel      = document.getElementById('challenge-VIDEO');
-      const video      = document.getElementById('video-preview');
-      const recordBtn  = document.getElementById('video-record-btn');
-      const countdown  = document.getElementById('video-countdown');
-      const status     = document.getElementById('video-status');
+    async VIDEO(challenge, signal) {
+      const panel         = document.getElementById('challenge-VIDEO');
+      const video         = document.getElementById('video-preview');
+      const recordBtn     = document.getElementById('video-record-btn');
+      const restartBtn    = document.getElementById('video-restart-btn');
+      const countdown     = document.getElementById('video-countdown');
+      const countdownSecs = document.getElementById('video-countdown-seconds');
+      const status        = document.getElementById('video-status');
+      const audioLevel    = document.getElementById('video-audio-level');
 
-      // Show the phrase the user needs to say.
       document.getElementById('video-phrase').textContent = challenge.value || '';
-
       panel.classList.remove('hidden');
 
-      // Start (or restart) the camera stream and begin recording.
-      // Extracted as a function so retry can call it again after a failed upload.
+      let audioCtx      = null;
+      let levelRafId    = null;
+
+      function startAudioMeter(stream) {
+        audioCtx = new AudioContext();
+        const source   = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        const buf = new Uint8Array(analyser.frequencyBinCount);
+        function tick() {
+          analyser.getByteFrequencyData(buf);
+          const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
+          audioLevel.style.width = `${Math.min(avg * 2, 100)}%`;
+          levelRafId = requestAnimationFrame(tick);
+        }
+        tick();
+      }
+
+      function stopAudioMeter() {
+        cancelAnimationFrame(levelRafId);
+        if (audioCtx) { audioCtx.close(); audioCtx = null; }
+        audioLevel.style.width = '0%';
+      }
+
+      signal.addEventListener('abort', stopAudioMeter, { once: true });
+
       async function startCamera() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
@@ -813,22 +871,99 @@ const PresenceApp = {
             audio: true,
           });
           video.srcObject = stream;
+          startAudioMeter(stream);
         } catch (err) {
-          status.textContent = 'Camera permission denied. Please allow access and reload.';
+          if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+            status.textContent = 'No microphone found. Please connect a microphone and try again.';
+          } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+            status.textContent = 'Microphone is in use or unavailable. Please check your audio device.';
+          } else {
+            status.textContent = 'Camera or microphone permission denied. Please allow access and reload.';
+          }
           recordBtn.disabled = true;
         }
       }
 
+      async function fetchNonce() {
+        const res = await fetch(
+          `${PresenceApp.apiBase}/events/${PresenceApp._eventId}/sessions/${PresenceApp._sessionId}/video/challenge`
+        );
+        if (!res.ok) throw new Error(`Could not fetch video token (${res.status})`);
+        const data = await res.json();
+        return data.token;
+      }
+
+      function captureFrame() {
+        const canvas = document.createElement('canvas');
+        canvas.width  = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        return canvas.toDataURL('image/jpeg', 0.85);
+      }
+
       await startCamera();
 
+      let currentToken = null;
+      let tokenTimer   = null;
+
+      async function refreshNonce() {
+        clearTimeout(tokenTimer);
+        try {
+          currentToken = await fetchNonce();
+          // Re-fetch 5s before expiry so Start always has a fresh token.
+          tokenTimer = setTimeout(refreshNonce, 55000);
+          signal.addEventListener('abort', () => clearTimeout(tokenTimer), { once: true });
+        } catch (err) {
+          status.textContent = 'Could not prepare challenge. Please try again.';
+          recordBtn.disabled = true;
+        }
+      }
+
+      await refreshNonce();
+
+      let activeRecording = null;
+
+      function stopActive() {
+        if (!activeRecording) return;
+        clearInterval(activeRecording.tick);
+        activeRecording.mediaRecorder.ondataavailable = null;
+        activeRecording.mediaRecorder.onstop = null;
+        try { activeRecording.mediaRecorder.stop(); } catch (_) {}
+        activeRecording = null;
+      }
+
+      function resetUI() {
+        countdown.classList.add('hidden');
+        restartBtn.classList.add('hidden');
+        recordBtn.classList.remove('hidden');
+        recordBtn.disabled = false;
+        recordBtn.textContent = 'Start recording';
+        status.textContent = '';
+      }
+
+      restartBtn.addEventListener('click', async () => {
+        stopActive();
+        if (!video.srcObject || video.srcObject.getTracks().every(t => t.readyState === 'ended')) {
+          await startCamera();
+        }
+        await refreshNonce();
+        resetUI();
+      }, { signal });
+
       recordBtn.addEventListener('click', async () => {
-        // On retry the stream will have been stopped — restart it before recording.
         if (!video.srcObject || video.srcObject.getTracks().every(t => t.readyState === 'ended')) {
           await startCamera();
         }
 
-        recordBtn.disabled = true;
-        recordBtn.textContent = 'Recording…';
+        // Capture the frame before recording starts — camera is already live.
+        const frame = captureFrame();
+
+        // Freeze the token we'll submit with — refreshNonce won't overwrite mid-recording.
+        const token = currentToken;
+        clearTimeout(tokenTimer);
+
+        recordBtn.classList.add('hidden');
+        restartBtn.classList.remove('hidden');
         status.textContent = '';
 
         const chunks = [];
@@ -839,16 +974,17 @@ const PresenceApp = {
         };
 
         mediaRecorder.onstop = async () => {
+          // onstop fires on both natural end and restart — only upload on natural end.
+          if (activeRecording) return;
+
           countdown.classList.add('hidden');
+          restartBtn.classList.add('hidden');
           status.textContent = 'Uploading…';
 
-          // Stop the camera stream before the network call.
           video.srcObject.getTracks().forEach(t => t.stop());
 
           const blob = new Blob(chunks, { type: 'video/webm' });
-
-          // Convert Blob to base64 via FileReader.
-          const videoData = await new Promise((resolve, reject) => {
+          const videoB64 = await new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload  = () => resolve(reader.result);
             reader.onerror = reject;
@@ -856,34 +992,35 @@ const PresenceApp = {
           });
 
           try {
-            const result = await PresenceApp._respond({ ...challenge, videoData });
+            const result = await PresenceApp._respond({ ...challenge, frame, video: videoB64, token });
             PresenceApp._handleResponse(result);
           } catch (err) {
             status.textContent = 'Failed to upload. Please try again.';
-            recordBtn.textContent = 'Try again';
-            recordBtn.disabled = false;
+            await startCamera();
+            await refreshNonce();
+            resetUI();
           }
         };
 
         mediaRecorder.start();
 
-        // Countdown: 5 → 4 → 3 → 2 → 1, then stop.
         const DURATION = 5;
         let remaining = DURATION;
-
-        countdown.textContent = remaining;
+        countdownSecs.textContent = remaining;
         countdown.classList.remove('hidden');
 
         const tick = setInterval(() => {
           remaining--;
-          countdown.textContent = remaining;
-
+          countdownSecs.textContent = remaining;
           if (remaining <= 0) {
             clearInterval(tick);
+            activeRecording = null;
             mediaRecorder.stop();
           }
         }, 1000);
-      });
+
+        activeRecording = { mediaRecorder, tick };
+      }, { signal });
     },
 
     // ── ENROL ───────────────────────────────────────────────────────────────
@@ -891,25 +1028,25 @@ const PresenceApp = {
     /**
      * ENROL: dynamic form built from challenge.fields[].
      *
-     * Each field descriptor:
-     *   { name, label, type: "text"|"email"|"tel"|"number"|"date", required }
+     * Field descriptor: { name, label, type: "text"|"email"|"tel"|"number"|"date", required }
      *
-     * Collects values, validates required fields, and POSTs as
-     * { ...challenge, data: { fieldName: value, ... } } to /enrol.
+     * When a session has no identityId and ENROL is first in the chain,
+     * the server creates a new identity from the submitted fields and returns
+     * its identityId. Every subsequent challenge becomes a setter — PIN sets
+     * their PIN, FACE indexes their photo — rather than verifying pre-existing data.
+     * This is how self-registration flows work.
      */
-    ENROL(challenge) {
-      const panel   = document.getElementById('challenge-ENROL');
-      const fields  = document.getElementById('enrol-fields');
-      const submit  = document.getElementById('enrol-submit');
-      const status  = document.getElementById('enrol-status');
+    ENROL(challenge, signal) {
+      const panel  = document.getElementById('challenge-ENROL');
+      const fields = document.getElementById('enrol-fields');
+      const submit = document.getElementById('enrol-submit');
+      const status = document.getElementById('enrol-status');
 
       panel.classList.remove('hidden');
 
-      // Build form fields from the challenge descriptor.
       fields.innerHTML = (challenge.fields || []).map(field => `
         <div class="flex flex-col gap-1.5">
-          <label for="enrol-${field.name}"
-            class="text-sm font-medium text-gray-700">
+          <label for="enrol-${field.name}" class="text-sm font-medium text-gray-700">
             ${field.label}${field.required ? ' <span class="text-red-500">*</span>' : ''}
           </label>
           <input
@@ -924,12 +1061,11 @@ const PresenceApp = {
       `).join('');
 
       submit.addEventListener('click', async () => {
-        // Collect and validate.
         const data = {};
         let valid = true;
 
         for (const field of (challenge.fields || [])) {
-          const el = document.getElementById(`enrol-${field.name}`);
+          const el  = document.getElementById(`enrol-${field.name}`);
           const val = el ? el.value.trim() : '';
           if (field.required && !val) {
             el.classList.add('border-red-500');
@@ -951,12 +1087,11 @@ const PresenceApp = {
         try {
           const result = await PresenceApp._respond({ ...challenge, data });
           PresenceApp._handleResponse(result);
-
         } catch (err) {
           status.textContent = 'Failed to submit. Please try again.';
           submit.disabled = false;
         }
-      });
+      }, { signal });
     },
 
   }, // /_challengeHandlers
@@ -965,20 +1100,14 @@ const PresenceApp = {
 
   /**
    * Show one named state, hide all others.
-   *
    * States: loading | error | used | window | challenge | complete | failed
-   *
-   * Keeping a single source of truth for visibility prevents states bleeding
-   * into each other when the challenge chain advances quickly.
    */
   _showState(name, errorMessage) {
     const states = ['loading', 'error', 'used', 'window', 'challenge', 'complete', 'failed'];
-
     states.forEach(s => {
       const el = document.getElementById(`state-${s}`);
       if (el) el.classList.toggle('hidden', s !== name);
     });
-
     if (name === 'error' && errorMessage) {
       document.getElementById('error-message').textContent = errorMessage;
     }

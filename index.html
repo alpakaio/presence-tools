@@ -176,10 +176,12 @@
 
       <!-- Used state: session was already consumed -->
       <div id="state-used" class="hidden flex-1 flex flex-col items-center justify-center gap-3 text-center px-4">
-        <span class="text-4xl">🔒</span>
+        <div class="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center">
+          <span class="text-3xl">✓</span>
+        </div>
         <h2 class="text-lg font-semibold text-gray-900">Link already used</h2>
         <p class="text-sm text-gray-500 leading-relaxed">
-          This session link has already been completed. Each link can only be used once.
+          This session has already been completed.
         </p>
       </div>
 
@@ -197,7 +199,7 @@
         </div>
         <h2 class="text-xl font-bold text-gray-900">Presence confirmed</h2>
         <p class="text-sm text-gray-500 leading-relaxed">
-          You're all set. Your attendance has been recorded.
+          Your attendance has been recorded.
         </p>
         <!-- Confidence score: shown when the server returns it (FACE challenges) -->
         <p id="complete-confidence" class="hidden text-xs text-gray-400"></p>
@@ -225,6 +227,23 @@
             <div id="progress-bar-fill" class="h-full bg-blue-500 rounded-full transition-all duration-500"></div>
           </div>
           <span id="progress-label" class="text-xs text-gray-400 shrink-0"></span>
+        </div>
+
+        <!-- ── GEO challenge ─────────────────────────────────────────── -->
+        <div id="challenge-GEO" class="hidden challenge-card flex flex-col items-center gap-6 text-center">
+          <div id="geo-spinner" class="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center">
+            <svg class="animate-spin w-7 h-7 text-blue-500" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+            </svg>
+          </div>
+          <div>
+            <h2 class="text-lg font-semibold text-gray-900">Checking your location</h2>
+            <p id="geo-status" class="text-sm text-gray-500 mt-1 leading-relaxed">Allow location access when prompted.</p>
+          </div>
+          <button id="geo-retry-btn" class="hidden w-full py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base active:bg-blue-600 transition-colors">
+            Try again
+          </button>
         </div>
 
         <!-- ── FACE challenge ────────────────────────────────────────── -->
@@ -318,31 +337,34 @@
           </button>
         </div>
 
-        <!-- ── SMS / EMAIL / SMS / EMAIL challenges ─────────── -->
+        <!-- ── SMS / EMAIL challenges ────────────────────────── -->
         <!--
-          4-digit MFA code entry. Each digit gets its own box.
+          6-digit OTP entry. Each digit gets its own box.
           app.js sets #otp-heading and #otp-subheading, then wires up the boxes.
 
           Each box is a single-character input. Typing a digit auto-advances
-          focus to the next box. Backspace moves focus back. This is the standard
-          pattern used by every major MFA flow (Apple, Google, Stripe, etc).
+          focus to the next box. Backspace moves focus back.
 
           autocomplete="one-time-code" on the first box enables iOS/Android
-          SMS autofill — the OS fills all four digits automatically.
+          SMS autofill — the OS fills all six digits automatically.
         -->
         <div id="challenge-OTP" class="hidden challenge-card flex flex-col gap-6">
           <div class="text-center">
             <h2 id="otp-heading" class="text-lg font-semibold text-gray-900"></h2>
             <p id="otp-subheading" class="text-sm text-gray-500 mt-1 leading-relaxed"></p>
           </div>
-          <div id="otp-boxes" class="flex justify-center gap-3">
-            <input class="otp-box w-16 h-16 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+          <div id="otp-boxes" class="flex justify-center gap-2">
+            <input class="otp-box w-12 h-14 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
               type="text" inputmode="numeric" maxlength="1" autocomplete="one-time-code" />
-            <input class="otp-box w-16 h-16 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+            <input class="otp-box w-12 h-14 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
               type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
-            <input class="otp-box w-16 h-16 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+            <input class="otp-box w-12 h-14 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
               type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
-            <input class="otp-box w-16 h-16 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+            <input class="otp-box w-12 h-14 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+              type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+            <input class="otp-box w-12 h-14 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+              type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+            <input class="otp-box w-12 h-14 text-center text-2xl font-bold border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
               type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
           </div>
           <button id="otp-submit"
@@ -367,13 +389,25 @@
             form submission if the user hits Enter.
           -->
           <form autocomplete="off" onsubmit="return false">
-            <input id="password-input"
-              type="password"
-              name="presence-secret"
-              autocomplete="off"
-              placeholder="Password"
-              class="w-full py-4 px-4 border-2 border-gray-200 rounded-2xl
-                     text-base outline-none focus:border-blue-500 transition-colors" />
+            <div class="relative">
+              <input id="password-input"
+                type="password"
+                name="presence-secret"
+                autocomplete="off"
+                placeholder="Password"
+                class="w-full py-4 pl-4 pr-12 border-2 border-gray-200 rounded-2xl
+                       text-base outline-none focus:border-blue-500 transition-colors" />
+              <button id="password-toggle" type="button" tabindex="-1"
+                class="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 active:text-gray-600">
+                <svg id="password-eye-show" xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+                <svg id="password-eye-hide" xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.477 0-8.268-2.943-9.542-7a9.956 9.956 0 012.293-3.95M6.938 6.938A9.956 9.956 0 0112 5c4.477 0 8.268 2.943 9.542 7a9.97 9.97 0 01-4.02 5.07M3 3l18 18" />
+                </svg>
+              </button>
+            </div>
           </form>
           <button id="password-submit"
             class="w-full py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base
@@ -402,23 +436,45 @@
             <p class="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-1">Say this phrase</p>
             <p id="video-phrase" class="text-lg font-bold text-gray-900 leading-snug"></p>
           </div>
-          <!-- Camera feed with countdown overlay -->
+          <!-- Camera feed with REC + countdown overlay -->
           <div id="face-preview-wrapper" style="position:relative">
             <video id="video-preview" autoplay playsinline muted></video>
             <!--
-              Countdown badge: shown over the video once recording starts.
-              Updated each second by app.js. Hidden until recording begins.
+              REC indicator: red pill with blinking dot and countdown seconds.
+              Looks like a camera viewfinder — immediately communicates recording.
+              Hidden until recording starts.
             -->
             <div id="video-countdown"
-              class="hidden absolute top-3 right-3 w-10 h-10 rounded-full bg-black/60
-                     flex items-center justify-center text-white font-bold text-lg">
+              class="hidden absolute top-3 right-3 flex items-center gap-1.5
+                     bg-red-600 text-white text-xs font-bold px-2.5 py-1 rounded-full">
+              <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+              <span>REC</span>
+              <span id="video-countdown-seconds"></span>
             </div>
           </div>
-          <button id="video-record-btn"
-            class="w-full py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base
-                   active:bg-blue-600 transition-colors">
-            Start recording
-          </button>
+          <!-- Audio level meter — shows mic input so user can verify audio before recording -->
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-gray-400 shrink-0">Mic</span>
+            <div class="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div id="video-audio-level" class="h-full bg-green-400 rounded-full transition-none" style="width:0%"></div>
+            </div>
+          </div>
+          <div class="flex gap-3">
+            <button id="video-record-btn"
+              class="flex-1 py-4 rounded-2xl bg-blue-500 text-white font-semibold text-base
+                     active:bg-blue-600 transition-colors">
+              Start recording
+            </button>
+            <!--
+              Restart button: visible only during recording.
+              Stops the current recording and restarts the camera so the user can try again.
+            -->
+            <button id="video-restart-btn"
+              class="hidden flex-1 py-4 rounded-2xl bg-gray-100 text-gray-900 font-semibold text-base
+                     active:bg-gray-200 transition-colors">
+              Restart
+            </button>
+          </div>
           <p id="video-status" class="text-center text-sm text-gray-400"></p>
         </div>
 
